@@ -1201,13 +1201,27 @@ function App(){
 function TeamPlannerWithDrive({ initialData }){
   const [data, setData] = useState(initialData || INIT_DATA);
 
-  function updateData(fn){
-    setData(prev=>{
-      const next=JSON.parse(JSON.stringify(prev));
-      fn(next);
-      return next;
-    });
+    _pendingSaveData = null;
+
+  try {
+    await window.saveToDrive(dataToSave);
+  } finally {
+    _saveInFlight = false;
+    if (_pendingSaveData) flushPendingSave();
   }
+}
+
+function updateData(fn){
+  setData(prev => {
+    const next = JSON.parse(JSON.stringify(prev));
+    fn(next);
+
+    _pendingSaveData = next;
+    flushPendingSave();
+
+    return next;
+  });
+}
 
   return (
     <div style={{fontFamily:'system-ui,-apple-system,sans-serif',background:'#f5f5f5',minHeight:'100vh',display:'flex',flexDirection:'column'}}>
