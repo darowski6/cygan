@@ -1200,42 +1200,43 @@ function App(){
 
 function TeamPlannerWithDrive({ initialData }){
   const [data, setData] = useState(initialData || INIT_DATA);
+  const [saveState, setSaveState] = useState('saved');
+  const saveTimer = useRef(null);
+  const isFirstRender = useRef(true);
 
-    _pendingSaveData = null;
+  useEffect(()=>{
+    if(isFirstRender.current){ isFirstRender.current=false; return; }
+    setSaveState('pending');
+    if(saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async ()=>{
+      setSaveState('saving');
+      await window.saveToDrive(data);
+      setSaveState('saved');
+    }, 1500);
+    return ()=>{ if(saveTimer.current) clearTimeout(saveTimer.current); };
+  }, [data]);
 
-  try {
-    await window.saveToDrive(dataToSave);
-  } finally {
-    _saveInFlight = false;
-    if (_pendingSaveData) flushPendingSave();
+  function updateData(fn){
+    setData(prev=>{
+      const next=JSON.parse(JSON.stringify(prev));
+      fn(next);
+      return next;
+    });
   }
-}
-
-function updateData(fn){
-  setData(prev => {
-    const next = JSON.parse(JSON.stringify(prev));
-    fn(next);
-
-    _pendingSaveData = next;
-    flushPendingSave();
-
-    return next;
-  });
-}
 
   return (
     <div style={{fontFamily:'system-ui,-apple-system,sans-serif',background:'#f5f5f5',minHeight:'100vh',display:'flex',flexDirection:'column'}}>
-      <TeamPlannerInner data={data} updateData={updateData}/>
+      <TeamPlannerInner data={data} updateData={updateData} saveState={saveState}/>
     </div>
   );
 }
 
 // Rename inner function
-function TeamPlannerInner({ data, updateData }){
-  return <TeamPlannerCore data={data} updateData={updateData}/>;
+function TeamPlannerInner({ data, updateData, saveState }){
+  return <TeamPlannerCore data={data} updateData={updateData} saveState={saveState}/>;
 }
 
-function TeamPlannerCore({ data: externalData, updateData: externalUpdateData }){
+function TeamPlannerCore({ data: externalData, updateData: externalUpdateData, saveState }){
   const [view,setView]=useState('day');
   const [tab,setTab]=useState('planner');
   const [currentDate,setCurrentDate]=useState(new Date());
@@ -1500,12 +1501,19 @@ function TeamPlannerCore({ data: externalData, updateData: externalUpdateData })
   return (
     <>
       <div style={{background:'#fff',borderBottom:'1px solid #e0e0e0',padding:'0 16px',display:'flex',alignItems:'center',position:'sticky',top:0,zIndex:50}}>
-        <span style={{fontSize:16,fontWeight:700,marginRight:20,padding:'14px 0',whiteSpace:'nowrap'}}>Team planner</span>
+        <div style={{display:'flex',alignItems:'baseline',gap:8,marginRight:20,padding:'14px 0',whiteSpace:'nowrap'}}>
+          <span style={{fontSize:16,fontWeight:700}}>Team planner</span>
+          <span style={{fontSize:11,color:'#bbb',fontWeight:400}}>v1.0</span>
+        </div>
         <button style={tabBtn(tab==='planner')} onClick={()=>{ setTab('planner'); setPersonView(null); }}>Planner</button>
         <button style={tabBtn(tab==='claims')} onClick={()=>setTab('claims')}>
           Claims{openClaims>0&&<span style={{background:'#FAEEDA',color:'#633806',borderRadius:10,padding:'1px 6px',fontSize:11,marginLeft:6,fontWeight:500}}>{openClaims} open</span>}
         </button>
-        <button onClick={()=>window.saveToDrive(data)} style={{marginLeft:'auto',background:'#534AB7',color:'#fff',border:'none',borderRadius:8,padding:'7px 14px',fontSize:13,cursor:'pointer'}}>Save to Drive</button>
+        <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:8}}>
+          {saveState==='pending'&&<span style={{fontSize:11,color:'#bbb'}}>Unsaved...</span>}
+          {saveState==='saving'&&<span style={{fontSize:11,color:'#534AB7'}}>Saving...</span>}
+          {saveState==='saved'&&<span style={{fontSize:11,color:'#085041'}}>✓ Saved</span>}
+        </div>
         {tab==='planner'&&!personView&&(
           <div style={{display:'flex',gap:4,marginLeft:12}}>
             {['day','week','month'].map(v=><button key={v} style={navBtn(view===v)} onClick={()=>setView(v)}>{v.charAt(0).toUpperCase()+v.slice(1)}</button>)}
