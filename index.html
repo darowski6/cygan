@@ -1,0 +1,1557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Team Planner</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:#f5f5f5}
+input,textarea,select,button{font-family:inherit}
+input[type=date]{appearance:auto}
+</style>
+</head>
+<body>
+
+<!-- Setup screen (shown before Google auth) -->
+<div id="setup-screen" style="max-width:520px;margin:0 auto;padding:40px 20px;display:none">
+  <h2 style="font-size:22px;font-weight:600;margin-bottom:8px">Team Planner</h2>
+  <p style="font-size:14px;color:#666;margin-bottom:28px;line-height:1.6">
+    This app stores your data in Google Drive as a JSON file.
+    You need a free Google Cloud OAuth Client ID. Follow the steps below — it takes ~3 minutes.
+  </p>
+
+  <div style="background:#fff;border:1px solid #e0e0e0;border-radius:12px;padding:24px;margin-bottom:16px">
+    <h3 style="font-size:14px;font-weight:600;margin-bottom:14px">Step 1 — Create a Google OAuth client</h3>
+    <ol style="font-size:13px;color:#666;line-height:1.8;padding-left:18px;margin-bottom:0">
+      <li>Go to <a href="https://console.cloud.google.com/" target="_blank" style="color:#534AB7">console.cloud.google.com</a></li>
+      <li>Create or select a project</li>
+      <li>Enable <strong>Google Drive API</strong> under APIs &amp; Services</li>
+      <li>Go to <strong>Credentials → Create Credentials → OAuth client ID</strong></li>
+      <li>Choose <strong>Web application</strong></li>
+      <li>Under <strong>Authorised JavaScript origins</strong> add <code style="background:#f5f5f5;padding:1px 5px;border-radius:4px">https://darowski6.github.io</code></li>
+      <li>Copy the <strong>Client ID</strong></li>
+    </ol>
+    <p style="font-size:13px;color:#666;margin-top:10px">
+      Also go to <strong>OAuth consent screen</strong>, add your Google account as a test user, set app to External.
+    </p>
+  </div>
+
+  <div style="background:#fff;border:1px solid #e0e0e0;border-radius:12px;padding:24px">
+    <h3 style="font-size:14px;font-weight:600;margin-bottom:14px">Step 2 — Enter your Client ID</h3>
+    <input type="text" id="client-id-input" placeholder="123456789-abc...apps.googleusercontent.com"
+      style="width:100%;padding:9px 11px;border:1px solid #e0e0e0;border-radius:8px;font-size:14px;outline:none;margin-bottom:12px"/>
+    <input type="text" id="file-name-input" value="team-planner.json" placeholder="File name in Drive"
+      style="width:100%;padding:9px 11px;border:1px solid #e0e0e0;border-radius:8px;font-size:14px;outline:none;margin-bottom:12px"/>
+    <button onclick="saveSetup()"
+      style="width:100%;background:#534AB7;color:#fff;border:none;border-radius:8px;padding:10px;font-size:14px;cursor:pointer">
+      Save &amp; connect to Google Drive
+    </button>
+    <p style="font-size:12px;color:#999;margin-top:8px">
+      Your Client ID is saved in your browser. Nothing is sent anywhere except Google&#39;s OAuth servers.
+    </p>
+  </div>
+</div>
+
+<!-- React app mounts here -->
+<div id="root"></div>
+
+<!-- Status bar for Drive sync (outside React to keep it simple) -->
+<div id="drive-status" style="position:fixed;bottom:12px;right:12px;background:#1a1a1a;color:#fff;border-radius:8px;padding:8px 14px;font-size:12px;display:none;z-index:999;max-width:280px"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script>
+// ── Google Drive helpers ──────────────────────────────────────────────────────
+let _token = null;
+let _fileId = null;
+let _fileName = 'team-planner.json';
+let _authClient = null;
+
+function showStatus(msg, dur=3000){
+  const el=document.getElementById('drive-status');
+  el.textContent=msg; el.style.display='block';
+  if(dur) setTimeout(()=>el.style.display='none',dur);
+}
+
+function saveSetup(){
+  const cid=document.getElementById('client-id-input').value.trim();
+  const fn=document.getElementById('file-name-input').value.trim()||'team-planner.json';
+  if(!cid){alert('Please enter your Client ID');return;}
+  localStorage.setItem('tp_clientid',cid);
+  localStorage.setItem('tp_filename',fn);
+  _fileName=fn;
+  document.getElementById('setup-screen').style.display='none';
+  loadGISAndAuth(cid);
+}
+
+function loadGISAndAuth(clientId){
+  const s=document.createElement('script');
+  s.src='https://accounts.google.com/gsi/client';
+  s.onload=()=>initAuth(clientId);
+  document.head.appendChild(s);
+}
+
+function initAuth(clientId){
+  _authClient=google.accounts.oauth2.initTokenClient({
+    client_id:clientId,
+    scope:'https://www.googleapis.com/auth/drive.file',
+    callback:(resp)=>{
+      if(resp.error){showStatus('Auth failed: '+resp.error,5000);return;}
+      _token=resp.access_token;
+      showStatus('Connected to Google Drive');
+      loadFromDrive();
+    }
+  });
+  _authClient.requestAccessToken();
+}
+
+async function driveReq(method,url,body,isJson=true){
+  const headers={'Authorization':'Bearer '+_token};
+  if(isJson&&body) headers['Content-Type']='application/json';
+  const resp=await fetch(url,{method,headers,body:isJson&&body?JSON.stringify(body):body});
+  if(resp.status===401){
+    showStatus('Session expired — reconnecting...',4000);
+    if(_authClient) _authClient.requestAccessToken();
+    throw new Error('401');
+  }
+  return resp;
+}
+
+async function loadFromDrive(){
+  showStatus('Loading from Drive...',0);
+  try{
+    const q=encodeURIComponent(`name=\'${_fileName}\' and trashed=false`);
+    const r=await driveReq('GET',`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`);
+    const data=await r.json();
+    if(data.files&&data.files.length>0){
+      _fileId=data.files[0].id;
+      const r2=await driveReq('GET',`https://www.googleapis.com/drive/v3/files/${_fileId}?alt=media`);
+      const saved=await r2.json();
+      if(window._onDriveLoaded) window._onDriveLoaded(saved);
+      showStatus('Loaded from Drive');
+    } else {
+      _fileId=null;
+      showStatus('New file — data will be saved on first save');
+      if(window._onDriveLoaded) window._onDriveLoaded(null);
+    }
+  }catch(e){
+    if(e.message!=='401'){
+      showStatus('Could not connect to Drive — working locally',5000);
+      if(window._onDriveLoaded) window._onDriveLoaded(null);
+    }
+  }
+}
+
+window.saveToDrive=async function(dataObj){
+  if(!_token){showStatus('Not connected to Google Drive',4000);return;}
+  showStatus('Saving...',0);
+  try{
+    const payload=JSON.stringify({...dataObj,updated:new Date().toISOString()});
+    if(_fileId){
+      await driveReq('PATCH',`https://www.googleapis.com/upload/drive/v3/files/${_fileId}?uploadType=media`,payload,false);
+    }else{
+      const meta=await driveReq('POST','https://www.googleapis.com/drive/v3/files',{name:_fileName,mimeType:'application/json'});
+      const created=await meta.json();
+      _fileId=created.id;
+      await driveReq('PATCH',`https://www.googleapis.com/upload/drive/v3/files/${_fileId}?uploadType=media`,payload,false);
+    }
+    showStatus('Saved to Drive ✓');
+  }catch(e){
+    if(e.message!=='401') showStatus('Save failed',5000);
+  }
+};
+
+// Boot
+window.addEventListener('DOMContentLoaded',()=>{
+  const cid=localStorage.getItem('tp_clientid');
+  const fn=localStorage.getItem('tp_filename');
+  if(cid){
+    _fileName=fn||'team-planner.json';
+    loadGISAndAuth(cid);
+  }else{
+    document.getElementById('setup-screen').style.display='block';
+  }
+});
+</script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useRef, useEffect, useCallback } = React;
+
+
+
+const COLORS  = ['#534AB7','#0F6E56','#993C1D','#854F0B','#185FA5','#3B6D11','#993556','#5F5E5A','#A32D2D','#3C3489'];
+const LCOLORS = ['#EEEDFE','#E1F5EE','#FAECE7','#FAEEDA','#E6F1FB','#EAF3DE','#FBEAF0','#F1EFE8','#FCEBEB','#CECBF6'];
+const TCOLORS = ['#3C3489','#085041','#712B13','#633806','#0C447C','#27500A','#72243E','#444441','#791F1F','#26215C'];
+const MONTHS  = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const MONTHS_S= ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const DAYS7   = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+
+function pad(n){ return String(n).padStart(2,'0') }
+function dk(d){ return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}` }
+function pd(s){ const[y,m,d]=s.split('-'); return new Date(+y,+m-1,+d) }
+function todayKey(){ return dk(new Date()) }
+function initials(n){ return n.split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase() }
+function addDays(dateStr, n){ const d=pd(dateStr); d.setDate(d.getDate()+n); return dk(d); }
+
+function Avatar({ name, idx, size=28 }){
+  const fs=size<26?9:size<32?11:13;
+  return <div style={{width:size,height:size,borderRadius:'50%',background:LCOLORS[idx%LCOLORS.length],color:TCOLORS[idx%TCOLORS.length],display:'flex',alignItems:'center',justifyContent:'center',fontSize:fs,fontWeight:600,flexShrink:0}}>{initials(name)}</div>;
+}
+
+function getAvailStatus(member, d){
+  const av=member?.availability||{};
+  if(av.availableDates?.includes(d)) return 'available';
+  if(av.unavailableDates?.includes(d)) return 'unavailable';
+  return 'unknown';
+}
+
+function getClaimStatus(claim, assignments){
+  if(claim.status==='completed') return 'completed';
+  const linked=assignments.filter(a=>a.claimIds?.includes(claim.id));
+  if(!linked.length) return 'open';
+  const today=todayKey();
+  const allPast=linked.every(a=>(a.dates||[]).length>0&&(a.dates||[]).every(d=>d<today));
+  if(allPast) return 'completed';
+  return 'planned';
+}
+
+const STATUS_META={
+  open:      {label:'Not planned', bg:'#f5f5f5', color:'#888',    border:'#e0e0e0'},
+  planned:   {label:'Planned',     bg:'#E6F1FB', color:'#0C447C', border:'#B5D4F4'},
+  completed: {label:'Completed',   bg:'#E1F5EE', color:'#085041', border:'#9FE1CB'},
+};
+
+const INIT_DATA={
+  members:[
+    {id:'m1',name:'Anna Berg',  availability:{availableDates:[],unavailableDates:[]}},
+    {id:'m2',name:'John Smith', availability:{availableDates:[],unavailableDates:[]}},
+    {id:'m3',name:'Sara Lee',   availability:{availableDates:[],unavailableDates:[]}},
+  ],
+  assignments:[],
+  claims:[]
+};
+
+function arrowBtn(){ return {background:'none',border:'1px solid #e0e0e0',borderRadius:6,padding:'3px 8px',cursor:'pointer',fontSize:13,color:'#666',lineHeight:1,fontFamily:'inherit'}; }
+function sBtn(bg,color,border){ return {background:bg,color,border:border||'none',borderRadius:6,padding:'5px 10px',fontSize:12,cursor:'pointer',fontFamily:'inherit',fontWeight:500}; }
+
+// ── Confirm dialog ────────────────────────────────────────────────────────────
+function Confirm({ message, onConfirm, onCancel }){
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.5)',zIndex:400,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
+      <div style={{background:'#fff',borderRadius:12,padding:24,maxWidth:360,width:'100%',border:'1px solid #e0e0e0'}}>
+        <div style={{fontSize:15,fontWeight:600,marginBottom:8}}>Are you sure?</div>
+        <div style={{fontSize:13,color:'#666',marginBottom:20,lineHeight:1.6}}>{message}</div>
+        <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
+          <button onClick={onCancel} style={{...sBtn('#f5f5f5','#555','1px solid #e0e0e0'),padding:'8px 16px',fontSize:13}}>Cancel</button>
+          <button onClick={onConfirm} style={{...sBtn('#FCEBEB','#791F1F','1px solid #F09595'),padding:'8px 16px',fontSize:13}}>Delete</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Mini calendar ─────────────────────────────────────────────────────────────
+function MiniCalendar({ date, onSelect, onClose }){
+  const [cal,setCal]=useState(new Date(date.getFullYear(),date.getMonth(),1));
+  const ref=useRef();
+  useEffect(()=>{
+    function h(e){ if(ref.current&&!ref.current.contains(e.target)) onClose(); }
+    setTimeout(()=>document.addEventListener('mousedown',h),0);
+    return ()=>document.removeEventListener('mousedown',h);
+  },[]);
+  const yr=cal.getFullYear(),mo=cal.getMonth();
+  const first=new Date(yr,mo,1),last=new Date(yr,mo+1,0);
+  const startOff=first.getDay()===0?6:first.getDay()-1;
+  const tod=todayKey(),selKey=dk(date);
+  const cells=[];
+  for(let i=0;i<startOff;i++) cells.push({d:new Date(yr,mo,1-startOff+i),other:true});
+  for(let d=1;d<=last.getDate();d++) cells.push({d:new Date(yr,mo,d),other:false});
+  const rem=7-((startOff+last.getDate())%7);
+  if(rem<7) for(let i=1;i<=rem;i++) cells.push({d:new Date(yr,mo+1,i),other:true});
+  return (
+    <div ref={ref} style={{position:'absolute',top:'calc(100% + 6px)',left:0,zIndex:300,background:'#fff',border:'1px solid #e0e0e0',borderRadius:12,padding:14,boxShadow:'0 8px 24px rgba(0,0,0,.12)',width:252}}>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
+        <button onClick={()=>setCal(new Date(yr,mo-1,1))} style={arrowBtn()}>‹</button>
+        <span style={{fontSize:13,fontWeight:600}}>{MONTHS_S[mo]} {yr}</span>
+        <button onClick={()=>setCal(new Date(yr,mo+1,1))} style={arrowBtn()}>›</button>
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:2,marginBottom:4}}>
+        {DAYS7.map(d=><div key={d} style={{fontSize:9,color:'#bbb',textAlign:'center',fontWeight:600,textTransform:'uppercase'}}>{d[0]}</div>)}
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:2}}>
+        {cells.map(({d,other},i)=>{
+          const k=dk(d),isSel=k===selKey,isT=k===tod;
+          return <div key={i} onClick={()=>{if(!other){onSelect(d);onClose();}}}
+            style={{textAlign:'center',padding:'5px 0',fontSize:12,borderRadius:6,cursor:other?'default':'pointer',
+              color:isSel?'#fff':other?'#ccc':isT?'#0C447C':'#1a1a1a',
+              background:isSel?'#534AB7':isT&&!isSel?'#E6F1FB':'transparent',
+              fontWeight:isT||isSel?600:400,opacity:other?.35:1}}>{d.getDate()}</div>;
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Person view ───────────────────────────────────────────────────────────────
+function PersonView({ memberId, members, assignments, updateData, onClose }){
+  const m=members.find(x=>x.id===memberId);
+  const [calDate,setCalDate]=useState(new Date());
+  // selectedRef holds the live set; selectedVer triggers re-render
+  const selectedRef=useRef(new Set());
+  const [selectedVer,setSelectedVer]=useState(0);
+  const mouseDownKey=useRef(null); // which day mousedown started on
+  const isDragging=useRef(false);
+  const [editName,setEditName]=useState(false);
+  const [nameVal,setNameVal]=useState(m?.name||'');
+  const [confirm,setConfirm]=useState(false);
+  if(!m) return null;
+
+  const mIdx=members.findIndex(x=>x.id===memberId);
+  const yr=calDate.getFullYear(),mo=calDate.getMonth();
+  const first=new Date(yr,mo,1),last=new Date(yr,mo+1,0);
+  const startOff=first.getDay()===0?6:first.getDay()-1;
+  const tod=todayKey();
+  const cells=[];
+  for(let i=0;i<startOff;i++) cells.push({d:new Date(yr,mo,1-startOff+i),other:true});
+  for(let d=1;d<=last.getDate();d++) cells.push({d:new Date(yr,mo,d),other:false});
+  const rem=7-((startOff+last.getDate())%7);
+  if(rem<7) for(let i=1;i<=rem;i++) cells.push({d:new Date(yr,mo+1,i),other:true});
+
+  const selected=selectedRef.current;
+  function bump(){ setSelectedVer(v=>v+1); }
+
+  function isAssigned(dStr){ return assignments.some(a=>(a.member1===memberId||a.member2===memberId)&&a.dates?.includes(dStr)); }
+
+  function handleMouseDown(dStr,e){
+    if(e.button!==0) return;
+    e.preventDefault();
+    mouseDownKey.current=dStr;
+    isDragging.current=false;
+    // Add this day to selection immediately (for drag feedback)
+    // But don't commit toggle yet — do that on mouseup
+    selectedRef.current=new Set([dStr]);
+    bump();
+  }
+  function handleMouseEnter(dStr){
+    if(!mouseDownKey.current) return;
+    isDragging.current=true;
+    selectedRef.current.add(dStr);
+    bump();
+  }
+  function handleMouseUp(dStr,e){
+    const startKey=mouseDownKey.current;
+    mouseDownKey.current=null;
+    if(!startKey) return;
+    if(isDragging.current){
+      // Drag finished — keep current selection
+      isDragging.current=false;
+      return;
+    }
+    // Pure click on dStr
+    // If previously this single day was already selected (before mousedown), toggle it off
+    // We can't know the pre-mousedown state here, so we track it separately:
+    // mousedown always sets selection to {dStr}; if user clicks same already-selected day, deselect
+    // Use e.detail===1 guard already handled by not using onClick
+    // Simple rule: after a pure click, selection = {dStr} (already set by mousedown)
+    // That's correct — single day selected. Nothing to do.
+    isDragging.current=false;
+  }
+  function handleMouseLeave(){
+    // Don't cancel drag on leave — let it continue across the grid
+  }
+  function stopDrag(){ mouseDownKey.current=null; isDragging.current=false; }
+
+  // Allow deselecting by clicking an already-selected solo day via a separate toggle
+  function handleDayClick(dStr){
+    // This fires AFTER mousedown+mouseup. At this point selectedRef has {dStr}.
+    // If this is the only selected day and it was already selected before, deselect.
+    // We track "was selected before mousedown" with a ref.
+  }
+
+  // Better approach: track pre-mousedown selection state
+  const preMouseDownSelected=useRef(new Set());
+  function handleMouseDown2(dStr,e){
+    if(e.button!==0) return;
+    e.preventDefault();
+    preMouseDownSelected.current=new Set(selectedRef.current);
+    mouseDownKey.current=dStr;
+    isDragging.current=false;
+    if(e.ctrlKey||e.metaKey){
+      // Ctrl/Cmd+click: add or remove this day from current selection
+      const n=new Set(selectedRef.current);
+      n.has(dStr)?n.delete(dStr):n.add(dStr);
+      selectedRef.current=n;
+    } else {
+      selectedRef.current=new Set([dStr]);
+    }
+    bump();
+  }
+  function handleMouseUp2(dStr,e){
+    const startKey=mouseDownKey.current;
+    mouseDownKey.current=null;
+    if(!startKey||startKey!==dStr) return;
+    if(isDragging.current){ isDragging.current=false; return; }
+    isDragging.current=false;
+    if(e?.ctrlKey||e?.metaKey) return; // ctrl handled in mousedown
+    // Pure single-day click — deselect if was already sole selection
+    const prev=preMouseDownSelected.current;
+    if(prev.size===1&&prev.has(dStr)){
+      selectedRef.current=new Set();
+    }
+    bump();
+  }
+
+  function applyStatus(status){
+    if(!selected.size) return;
+    const dates=[...selected];
+    updateData(d=>{
+      const mem=d.members.find(x=>x.id===memberId);
+      if(!mem.availability) mem.availability={availableDates:[],unavailableDates:[]};
+      mem.availability.availableDates  =mem.availability.availableDates.filter(x=>!dates.includes(x));
+      mem.availability.unavailableDates=mem.availability.unavailableDates.filter(x=>!dates.includes(x));
+      if(status==='available')   mem.availability.availableDates.push(...dates);
+      if(status==='unavailable') mem.availability.unavailableDates.push(...dates);
+    });
+    selectedRef.current=new Set(); bump();
+  }
+  function clearSel(){
+    if(!selected.size) return;
+    const dates=[...selected];
+    updateData(d=>{
+      const mem=d.members.find(x=>x.id===memberId);
+      if(!mem.availability) return;
+      mem.availability.availableDates  =mem.availability.availableDates.filter(x=>!dates.includes(x));
+      mem.availability.unavailableDates=mem.availability.unavailableDates.filter(x=>!dates.includes(x));
+    });
+    selectedRef.current=new Set(); bump();
+  }
+  function saveName(){ if(!nameVal.trim()) return; updateData(d=>{d.members.find(x=>x.id===memberId).name=nameVal.trim();}); setEditName(false); }
+  function deleteMember(){ updateData(d=>{d.members=d.members.filter(x=>x.id!==memberId);d.assignments=d.assignments.filter(a=>a.member1!==memberId&&a.member2!==memberId);}); onClose(); }
+
+  const av=m.availability||{};
+  const selSize=selected.size;
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:14}} onMouseUp={stopDrag} onMouseLeave={stopDrag}>
+      {confirm&&<Confirm message={`Delete ${m.name}? This will also remove all their assignments.`} onConfirm={deleteMember} onCancel={()=>setConfirm(false)}/>}
+      <div style={{background:'#fff',border:'1px solid #e0e0e0',borderRadius:12,padding:'14px 16px',display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+        <Avatar name={m.name} idx={mIdx} size={42}/>
+        <div style={{flex:1}}>
+          {editName
+            ? <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                <input value={nameVal} onChange={e=>setNameVal(e.target.value)} onKeyDown={e=>e.key==='Enter'&&saveName()} style={{fontSize:16,fontWeight:600,border:'1px solid #e0e0e0',borderRadius:6,padding:'4px 8px',outline:'none',fontFamily:'inherit'}} autoFocus/>
+                <button onClick={saveName} style={sBtn('#534AB7','#fff')}>Save</button>
+                <button onClick={()=>setEditName(false)} style={sBtn('#f5f5f5','#666')}>Cancel</button>
+              </div>
+            : <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontSize:16,fontWeight:600}}>{m.name}</span>
+                <button onClick={()=>setEditName(true)} style={{background:'none',border:'none',cursor:'pointer',color:'#bbb',fontSize:12,padding:'2px 6px',borderRadius:4}}>rename</button>
+              </div>
+          }
+          <div style={{fontSize:12,color:'#999',marginTop:3}}>
+            {(av.availableDates?.length||0)} available · {(av.unavailableDates?.length||0)} unavailable · rest unknown
+          </div>
+        </div>
+        <button onClick={()=>setConfirm(true)} style={sBtn('#FCEBEB','#791F1F','1px solid #F7C1C1')}>Delete</button>
+        <button onClick={onClose} style={sBtn('#f5f5f5','#555')}>← Back</button>
+      </div>
+
+      <div style={{background:'#fff',border:'1px solid #e0e0e0',borderRadius:12,padding:'10px 14px',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+        <span style={{fontSize:13,color:'#666'}}>
+          {selSize===0?'Click to select, drag for a range, Ctrl+click for multiple:':
+            <><strong>{selSize}</strong> day{selSize>1?'s':''} selected — mark as:</>}
+        </span>
+        <button onClick={()=>applyStatus('available')} disabled={!selSize} style={{...sBtn('#E1F5EE','#085041','1px solid #9FE1CB'),opacity:selSize?1:.35}}>✓ Available</button>
+        <button onClick={()=>applyStatus('unavailable')} disabled={!selSize} style={{...sBtn('#FCEBEB','#791F1F','1px solid #F7C1C1'),opacity:selSize?1:.35}}>✗ Unavailable</button>
+        <button onClick={clearSel} disabled={!selSize} style={{...sBtn('#f5f5f5','#666','1px solid #e0e0e0'),opacity:selSize?1:.35}}>○ Reset</button>
+        {selSize>0&&<button onClick={()=>{selectedRef.current=new Set();bump();}} style={{background:'none',border:'none',cursor:'pointer',color:'#bbb',marginLeft:'auto',fontSize:12}}>deselect all</button>}
+      </div>
+
+      <div style={{background:'#fff',border:'1px solid #e0e0e0',borderRadius:12,padding:16,userSelect:'none'}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
+          <button onClick={()=>setCalDate(new Date(yr,mo-1,1))} style={arrowBtn()}>‹</button>
+          <span style={{fontSize:15,fontWeight:600}}>{MONTHS[mo]} {yr}</span>
+          <button onClick={()=>setCalDate(new Date(yr,mo+1,1))} style={arrowBtn()}>›</button>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:4,marginBottom:4}}>
+          {DAYS7.map(d=><div key={d} style={{fontSize:10,color:'#bbb',textAlign:'center',fontWeight:600,textTransform:'uppercase',letterSpacing:'.04em'}}>{d}</div>)}
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:4}}>
+          {cells.map(({d,other},i)=>{
+            const dStr=dk(d),isSel=selected.has(dStr),isT=dStr===tod;
+            const st=getAvailStatus(m,dStr);
+            const assigned=isAssigned(dStr);
+            let bg='#fff',color='#1a1a1a',border='1px solid #e8e8e8';
+            if(isSel)                  { bg='#534AB7'; color='#fff'; border='1px solid #534AB7'; }
+            else if(assigned)          { bg='#FAEEDA'; color='#633806'; border='1px solid #FAC775'; }
+            else if(st==='available')  { bg='#E1F5EE'; color='#085041'; border='1px solid #9FE1CB'; }
+            else if(st==='unavailable'){ bg='#FCEBEB'; color='#791F1F'; border='1px solid #F7C1C1'; }
+            else if(isT)               { bg='#EEF5FF'; color='#185FA5'; border='1px solid #B5D4F4'; }
+            return (
+              <div key={i}
+                onMouseDown={e=>{ if(!other) handleMouseDown2(dStr,e); }}
+                onMouseEnter={()=>{ if(!other&&mouseDownKey.current){ isDragging.current=true; selectedRef.current.add(dStr); bump(); } }}
+                onMouseUp={e=>{ if(!other) handleMouseUp2(dStr,e); }}
+                style={{textAlign:'center',padding:'9px 0',fontSize:13,borderRadius:8,
+                  cursor:other?'default':'pointer',background:bg,color,border,
+                  opacity:other?.25:1,fontWeight:isT||isSel?600:400,transition:'background .08s'}}>
+                {d.getDate()}
+              </div>
+            );
+          })}
+        </div>
+        <div style={{display:'flex',gap:14,marginTop:12,fontSize:11,color:'#999',flexWrap:'wrap'}}>
+          {[['#E1F5EE','#9FE1CB','Available'],['#FCEBEB','#F7C1C1','Unavailable'],['#FAEEDA','#FAC775','Assigned'],['#fff','#e0e0e0','Unknown']].map(([bg,bd,label])=>(
+            <span key={label}><span style={{display:'inline-block',width:10,height:10,borderRadius:3,background:bg,border:`1px solid ${bd}`,marginRight:4,verticalAlign:'middle'}}/>{label}</span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Claim browser overlay (used inside PairModal) ─────────────────────────────
+function ClaimBrowserOverlay({ claims, assignments, selectedIds, onToggle, onClose, maxReached }){
+  const [filter,setFilter]=useState('open');
+  function effSt(c){ return getClaimStatus(c,assignments); }
+  const filtered=filter==='all'?claims:claims.filter(c=>effSt(c)===filter);
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.55)',zIndex:300,display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'50px 16px 16px',overflowY:'auto'}}>
+      <div style={{background:'#fff',borderRadius:12,border:'1px solid #e0e0e0',padding:24,width:'100%',maxWidth:560}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
+          <h3 style={{fontSize:16,fontWeight:600,margin:0}}>Browse claims</h3>
+          <button onClick={onClose} style={{background:'none',border:'none',cursor:'pointer',fontSize:20,color:'#bbb',lineHeight:1,padding:'0 4px'}}>×</button>
+        </div>
+        <div style={{display:'flex',gap:4,marginBottom:14,flexWrap:'wrap'}}>
+          {[['open','Not planned'],['planned','Planned'],['completed','Completed'],['all','All']].map(([key,label])=>{
+            const count=key==='all'?claims.length:claims.filter(c=>effSt(c)===key).length;
+            return (
+              <button key={key} onClick={()=>setFilter(key)}
+                style={{background:filter===key?'#EEEDFE':'transparent',color:filter===key?'#3C3489':'#666',
+                  border:filter===key?'1px solid #534AB7':'1px solid #e0e0e0',borderRadius:6,padding:'5px 10px',fontSize:12,cursor:'pointer',fontFamily:'inherit'}}>
+                {label} ({count})
+              </button>
+            );
+          })}
+        </div>
+        {filtered.length===0&&<div style={{fontSize:13,color:'#999',padding:'20px 0',textAlign:'center'}}>No claims with this status.</div>}
+        <div style={{display:'flex',flexDirection:'column',gap:6,maxHeight:'55vh',overflowY:'auto'}}>
+          {filtered.map(c=>{
+            const st=effSt(c),sm=STATUS_META[st]||STATUS_META.open;
+            const isSel=selectedIds.includes(c.id);
+            const disabled=!isSel&&maxReached;
+            return (
+              <div key={c.id} onClick={()=>!disabled&&onToggle(c.id)}
+                style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',borderRadius:10,
+                  border:`1px solid ${isSel?'#534AB7':sm.border}`,background:isSel?'#EEEDFE':sm.bg,
+                  cursor:disabled?'not-allowed':'pointer',opacity:disabled?.4:1,transition:'border .1s'}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                    <span style={{fontSize:13,fontWeight:600,color:isSel?'#3C3489':sm.color}}>{c.name}</span>
+                    <span style={{fontSize:10,padding:'1px 6px',borderRadius:4,background:isSel?'rgba(83,74,183,.12)':sm.bg,color:sm.color,border:`1px solid ${isSel?'#C3BFEF':sm.border}`,fontWeight:500}}>{sm.label}</span>
+                    {c.location&&<span style={{fontSize:11,color:'#999'}}>· {c.location}</span>}
+                  </div>
+                  {c.description&&<div style={{fontSize:12,color:'#888',marginTop:3,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.description}</div>}
+                  <div style={{fontSize:11,color:'#bbb',marginTop:2}}>Added {c.dateAdded}</div>
+                </div>
+                <div style={{width:20,height:20,borderRadius:'50%',border:`2px solid ${isSel?'#534AB7':'#ccc'}`,background:isSel?'#534AB7':'transparent',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+                  {isSel&&<span style={{color:'#fff',fontSize:10,fontWeight:700}}>✓</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{display:'flex',justifyContent:'flex-end',marginTop:16}}>
+          <button onClick={onClose} style={{...sBtn('#534AB7','#fff'),padding:'8px 20px',fontSize:13}}>Done ({selectedIds.length} selected)</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Claims tab ────────────────────────────────────────────────────────────────
+function ClaimsTab({ claims, assignments, members, updateData }){
+  const [editId,setEditId]=useState(null);
+  const [showNew,setShowNew]=useState(false);
+  const [filter,setFilter]=useState('all');
+  const [confirm,setConfirm]=useState(null);
+
+  function mIdx(id){ return members.findIndex(m=>m.id===id); }
+  function getMem(id){ return members.find(m=>m.id===id); }
+  function effSt(c){ return getClaimStatus(c,assignments); }
+
+  // Get the "sort date" for grouping:
+  // open => dateAdded; planned/completed => earliest assignment date
+  function claimSortDate(c){
+    const st=effSt(c);
+    if(st==='open') return c.dateAdded||'9999';
+    const linked=assignments.filter(a=>a.claimIds?.includes(c.id));
+    const allDates=linked.flatMap(a=>a.dates||[]).sort();
+    return allDates[0]||c.dateAdded||'9999';
+  }
+
+  const counts={all:claims.length};
+  ['open','planned','completed'].forEach(s=>{ counts[s]=claims.filter(c=>effSt(c)===s).length; });
+  const filtered=(filter==='all'?claims:claims.filter(c=>effSt(c)===filter))
+    .slice().sort((a,b)=>claimSortDate(a).localeCompare(claimSortDate(b)));
+
+  // Group by date
+  function groupByDate(list){
+    const groups={};
+    list.forEach(c=>{
+      const d=claimSortDate(c);
+      if(!groups[d]) groups[d]=[];
+      groups[d].push(c);
+    });
+    return Object.entries(groups).sort(([a],[b])=>a.localeCompare(b));
+  }
+  const grouped=groupByDate(filtered);
+
+  function deleteClaim(id){
+    updateData(d=>{
+      d.claims=d.claims.filter(x=>x.id!==id);
+      d.assignments=d.assignments.map(a=>({...a,claimIds:(a.claimIds||[]).filter(cid=>cid!==id)}));
+    });
+    setConfirm(null);
+  }
+
+  function dateGroupLabel(d,status){
+    if(d==='9999') return 'No date';
+    const parsed=pd(d);
+    const label=parsed.toLocaleDateString('en',{weekday:'short',day:'numeric',month:'short',year:'numeric'});
+    if(status==='open') return `Added ${label}`;
+    if(status==='planned') return `Planned for ${label}`;
+    return `Completed ${label}`;
+  }
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:12}}>
+      {confirm&&<Confirm message={`Delete claim "${confirm.name}"? It will be unlinked from any assignments.`} onConfirm={()=>deleteClaim(confirm.id)} onCancel={()=>setConfirm(null)}/>}
+      <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+        <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+          {[['all','All'],['open','Not planned'],['planned','Planned'],['completed','Completed']].map(([key,label])=>(
+            <button key={key} onClick={()=>setFilter(key)}
+              style={{background:filter===key?'#EEEDFE':'transparent',color:filter===key?'#3C3489':'#666',border:filter===key?'1px solid #534AB7':'1px solid #e0e0e0',borderRadius:6,padding:'5px 10px',fontSize:12,cursor:'pointer',fontFamily:'inherit'}}>
+              {label} ({counts[key]||0})
+            </button>
+          ))}
+        </div>
+        <button onClick={()=>{setEditId(null);setShowNew(true);}} style={{marginLeft:'auto',...sBtn('#534AB7','#fff'),padding:'7px 14px',fontSize:13}}>+ New claim</button>
+      </div>
+
+      {showNew&&<ClaimForm claims={claims} updateData={updateData} onClose={()=>setShowNew(false)}/>}
+      {editId&&<ClaimForm claimId={editId} claims={claims} onClose={()=>setEditId(null)} updateData={updateData} onDelete={id=>setConfirm(claims.find(c=>c.id===id))}/>}
+
+      {grouped.length===0&&<div style={{fontSize:13,color:'#999',padding:'32px 0',textAlign:'center'}}>No claims yet.</div>}
+
+      {grouped.map(([date,group])=>{
+        const repStatus=effSt(group[0]);
+        return (
+          <div key={date}>
+            <div style={{fontSize:11,fontWeight:600,color:'#999',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8,marginTop:4}}>
+              {dateGroupLabel(date,repStatus)}
+            </div>
+            <div style={{display:'flex',flexDirection:'column',gap:6}}>
+              {group.map(c=>{
+                const st=effSt(c),sm=STATUS_META[st]||STATUS_META.open;
+                const linked=assignments.filter(a=>a.claimIds?.includes(c.id));
+                return (
+                  <div key={c.id} style={{background:'#fff',border:'1px solid #e0e0e0',borderRadius:12,padding:'14px 16px'}}>
+                    <div style={{display:'flex',alignItems:'flex-start',gap:10}}>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4,flexWrap:'wrap'}}>
+                          <span style={{fontSize:14,fontWeight:600}}>{c.name}</span>
+                          <span style={{fontSize:11,padding:'2px 8px',borderRadius:4,background:sm.bg,color:sm.color,border:`1px solid ${sm.border}`,fontWeight:500}}>{sm.label}</span>
+                          {c.location&&<span style={{fontSize:12,color:'#888'}}>· {c.location}</span>}
+                        </div>
+                        {c.description&&<div style={{fontSize:13,color:'#666',marginBottom:6,lineHeight:1.5}}>{c.description}</div>}
+                        <div style={{fontSize:12,color:'#bbb',marginBottom:linked.length?8:0}}>Added {c.dateAdded}</div>
+                        {linked.length>0&&linked.map(a=>{
+                          const m1=getMem(a.member1),m2=getMem(a.member2);
+                          if(!m1||!m2) return null;
+                          return (
+                            <div key={a.id} style={{display:'flex',alignItems:'center',gap:8,background:'#f9f9f9',border:'1px solid #efefef',borderRadius:8,padding:'7px 10px',marginBottom:4,flexWrap:'wrap'}}>
+                              <div style={{display:'flex',gap:2}}><Avatar name={m1.name} idx={mIdx(m1.id)} size={22}/><Avatar name={m2.name} idx={mIdx(m2.id)} size={22}/></div>
+                              <span style={{fontSize:13,fontWeight:500}}>{m1.name} & {m2.name}</span>
+                              {a.task&&<span style={{fontSize:12,color:'#888'}}>— {a.task}</span>}
+                              <div style={{marginLeft:'auto',display:'flex',gap:4,flexWrap:'wrap'}}>
+                                {(a.dates||[]).sort().map(d=><span key={d} style={{fontSize:11,background:'#E6F1FB',color:'#0C447C',borderRadius:4,padding:'2px 6px'}}>{d}</span>)}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <button onClick={()=>setEditId(c.id)} style={{background:'none',border:'none',color:'#bbb',cursor:'pointer',fontSize:18,padding:'2px 6px',borderRadius:4,lineHeight:1,flexShrink:0}}>⋮</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ClaimForm({ claimId, claims, updateData, onClose, onDelete }){
+  const ex=claimId?claims.find(c=>c.id===claimId):null;
+  const [name,setName]=useState(ex?.name||'');
+  const [dateAdded,setDateAdded]=useState(ex?.dateAdded||todayKey());
+  const [description,setDescription]=useState(ex?.description||'');
+  const [location,setLocation]=useState(ex?.location||'');
+  function save(){
+    if(!name.trim()){alert('Name is required');return;}
+    if(claimId){
+      updateData(d=>{const c=d.claims.find(x=>x.id===claimId);c.name=name.trim();c.dateAdded=dateAdded;c.description=description;c.location=location;});
+    } else {
+      updateData(d=>d.claims.push({id:'c_'+Date.now(),name:name.trim(),dateAdded,description,location}));
+    }
+    onClose();
+  }
+  return (
+    <div style={{background:'#fff',border:'1px solid #534AB7',borderRadius:12,padding:20}}>
+      <div style={{fontSize:14,fontWeight:600,marginBottom:14}}>{claimId?'Edit claim':'New claim'}</div>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:14}}>
+        <div style={{gridColumn:'1/-1'}}>
+          <label style={{fontSize:12,fontWeight:500,color:'#666',display:'block',marginBottom:4}}>Claim name <span style={{color:'#A32D2D'}}>*</span></label>
+          <input value={name} onChange={e=>setName(e.target.value)} autoFocus placeholder="e.g. Fire damage — Maple St" style={{width:'100%',padding:'8px 10px',border:'1px solid #e0e0e0',borderRadius:8,fontSize:14,fontFamily:'inherit',outline:'none',boxSizing:'border-box'}}/>
+        </div>
+        <div>
+          <label style={{fontSize:12,fontWeight:500,color:'#666',display:'block',marginBottom:4}}>Date added</label>
+          <input type="date" value={dateAdded} onChange={e=>setDateAdded(e.target.value)} style={{width:'100%',padding:'8px 10px',border:'1px solid #e0e0e0',borderRadius:8,fontSize:14,fontFamily:'inherit',outline:'none',boxSizing:'border-box'}}/>
+        </div>
+        <div>
+          <label style={{fontSize:12,fontWeight:500,color:'#666',display:'block',marginBottom:4}}>Location</label>
+          <input value={location} onChange={e=>setLocation(e.target.value)} placeholder="Address or area" style={{width:'100%',padding:'8px 10px',border:'1px solid #e0e0e0',borderRadius:8,fontSize:14,fontFamily:'inherit',outline:'none',boxSizing:'border-box'}}/>
+        </div>
+        <div style={{gridColumn:'1/-1'}}>
+          <label style={{fontSize:12,fontWeight:500,color:'#666',display:'block',marginBottom:4}}>Description</label>
+          <textarea value={description} onChange={e=>setDescription(e.target.value)} placeholder="Details about the claim..." rows={3} style={{width:'100%',padding:'8px 10px',border:'1px solid #e0e0e0',borderRadius:8,fontSize:14,fontFamily:'inherit',outline:'none',resize:'vertical',boxSizing:'border-box'}}/>
+        </div>
+      </div>
+      <div style={{display:'flex',gap:8,justifyContent:'flex-end',flexWrap:'wrap'}}>
+        {claimId&&onDelete&&<button onClick={()=>onDelete(claimId)} style={{...sBtn('#FCEBEB','#791F1F','1px solid #F7C1C1'),padding:'8px 14px',fontSize:13}}>Delete</button>}
+        <button onClick={onClose} style={{...sBtn('#f5f5f5','#555','1px solid #e0e0e0'),padding:'8px 14px',fontSize:13}}>Cancel</button>
+        <button onClick={save} style={{...sBtn('#534AB7','#fff'),padding:'8px 16px',fontSize:13}}>Save</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Main app ──────────────────────────────────────────────────────────────────
+function TeamPlanner(){
+  const [data,setData]=useState(INIT_DATA);
+  const [view,setView]=useState('day');
+  const [tab,setTab]=useState('planner');
+  const [currentDate,setCurrentDate]=useState(new Date());
+  const [modal,setModal]=useState(null);
+  const [showDatePicker,setShowDatePicker]=useState(false);
+  const [personView,setPersonView]=useState(null);
+
+  const members=data.members,assignments=data.assignments,claims=data.claims;
+  function mIdx(id){ return members.findIndex(m=>m.id===id) }
+  function getMember(id){ return members.find(m=>m.id===id) }
+  function getAssigns(d){ return assignments.filter(a=>a.dates?.includes(d)) }
+  function updateData(fn){ setData(prev=>{ const next=JSON.parse(JSON.stringify(prev)); fn(next); return next; }); }
+
+  function navigate(dir){
+    setCurrentDate(prev=>{ const d=new Date(prev);
+      if(view==='day') d.setDate(d.getDate()+dir);
+      else if(view==='week') d.setDate(d.getDate()+dir*7);
+      else d.setMonth(d.getMonth()+dir);
+      return d;
+    });
+  }
+  function goDay(dStr){ setCurrentDate(pd(dStr)); setView('day'); setPersonView(null); }
+
+  function viewTitle(){
+    if(view==='day') return currentDate.toLocaleDateString('en',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+    if(view==='month') return `${MONTHS[currentDate.getMonth()]} ${currentDate.getFullYear()}`;
+    const d=new Date(currentDate),dow=d.getDay(),diff=dow===0?-6:1-dow;
+    d.setDate(d.getDate()+diff); const end=new Date(d); end.setDate(d.getDate()+6);
+    return d.toLocaleDateString('en',{day:'numeric',month:'short'})+' – '+end.toLocaleDateString('en',{day:'numeric',month:'short',year:'numeric'});
+  }
+
+  function getMemberDayStatus(m,dStr){
+    if(assignments.some(a=>(a.member1===m.id||a.member2===m.id)&&a.dates?.includes(dStr))) return 'assigned';
+    return getAvailStatus(m,dStr);
+  }
+
+  // ── Modals ──────────────────────────────────────────────────────────────────
+  function AddMemberModal(){
+    const [name,setName]=useState('');
+    function save(){ if(!name.trim()) return; updateData(d=>d.members.push({id:'m_'+Date.now(),name:name.trim(),availability:{availableDates:[],unavailableDates:[]}})); setModal(null); }
+    return <MW title="Add team member"><Fld label="Full name"><input autoFocus value={name} onChange={e=>setName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&save()} placeholder="e.g. Anna Berg"/></Fld><Act><Btn onClick={()=>setModal(null)}>Cancel</Btn><Btn primary onClick={save}>Add</Btn></Act></MW>;
+  }
+
+  // ── Pair modal (create + edit) ──────────────────────────────────────────────
+  function PairModal({ assignId }){
+    const ex = assignId ? assignments.find(x=>x.id===assignId) : null;
+    const [picked,setPicked]=useState(ex?[ex.member1,ex.member2]:[]);
+    const [claimIds,setClaimIds]=useState(ex?.claimIds||[]);
+    const [task,setTask]=useState(ex?.task||'');
+    const [startDate,setStartDate]=useState(ex?.dates?.[0]||dk(currentDate));
+    const [numDays,setNumDays]=useState(ex?.dates?.length||1);
+    const [showAll,setShowAll]=useState(false);
+    const [confirmDel,setConfirmDel]=useState(false);
+    const [showClaimBrowser,setShowClaimBrowser]=useState(false);
+
+    // Compute dates from startDate + numDays
+    const dates=Array.from({length:numDays},(_,i)=>addDays(startDate,i));
+
+    function tp(id){ setPicked(prev=>prev.includes(id)?prev.filter(x=>x!==id):prev.length<2?[...prev,id]:prev); }
+    function toggleClaim(id){ setClaimIds(prev=>prev.includes(id)?prev.filter(x=>x!==id):[...prev,id].slice(0,4)); }
+
+    // Member availability status across ALL selected dates
+    function memberStatusForDates(m){
+      // If assigned on any of the dates (excluding this assignment being edited)
+      const isAssigned=dates.some(d=>
+        assignments.some(a=>a.id!==assignId&&(a.member1===m.id||a.member2===m.id)&&a.dates?.includes(d))
+      );
+      if(isAssigned) return 'assigned';
+      // Check explicit availability
+      const av=m.availability||{};
+      const hasAvail=dates.some(d=>av.availableDates?.includes(d));
+      const hasUnavail=dates.some(d=>av.unavailableDates?.includes(d));
+      if(hasUnavail) return 'unavailable';
+      if(hasAvail) return 'available';
+      return 'unknown';
+    }
+
+    const MEMBER_STATUS_STYLE={
+      available:  {bg:'#E1F5EE',border:'#9FE1CB',color:'#085041',label:'Available'},
+      assigned:   {bg:'#FAEEDA',border:'#FAC775',color:'#633806',label:'Assigned'},
+      unavailable:{bg:'#FCEBEB',border:'#F7C1C1',color:'#791F1F',label:'Unavailable'},
+      unknown:    {bg:'#f5f5f5',border:'#e0e0e0',color:'#888',   label:'Unknown'},
+    };
+
+    const sortedMembers=[...members].sort((a,b)=>{
+      const order={available:0,unknown:1,assigned:2,unavailable:3};
+      return (order[memberStatusForDates(a)]||1)-(order[memberStatusForDates(b)]||1);
+    });
+    const availableMembers=sortedMembers.filter(m=>memberStatusForDates(m)==='available');
+    const otherMembers=sortedMembers.filter(m=>memberStatusForDates(m)!=='available');
+    const displayMembers=showAll?sortedMembers:availableMembers.length>0?availableMembers:sortedMembers;
+
+    function save(){
+      if(picked.length!==2){alert('Select exactly 2 members');return;}
+      if(!dates.length){alert('Add at least one date');return;}
+      if(assignId){
+        updateData(d=>{const x=d.assignments.find(x=>x.id===assignId);x.member1=picked[0];x.member2=picked[1];x.task=task;x.claimIds=claimIds;x.dates=dates;});
+      } else {
+        updateData(d=>d.assignments.push({id:'a_'+Date.now(),member1:picked[0],member2:picked[1],task,claimIds,dates}));
+      }
+      setModal(null);
+    }
+    function doDelete(){
+      updateData(d=>{d.assignments=d.assignments.filter(x=>x.id!==assignId);});
+      setModal(null);
+    }
+
+    const availClaims=claims.filter(c=>{ const s=getClaimStatus(c,assignments); return s==='open'||s==='planned'||claimIds.includes(c.id); });
+
+    return (
+      <MW title={assignId?'Edit pair assignment':'New pair assignment'} wide>
+        {confirmDel&&<Confirm message="Delete this pair assignment?" onConfirm={doDelete} onCancel={()=>setConfirmDel(false)}/>}
+
+        {/* Date selector — simplified: always show multi-day panel */}
+        <Fld label="Assignment dates">
+          <div style={{background:'#f9f9f9',border:'1px solid #e0e0e0',borderRadius:10,padding:12}}>
+            <div style={{display:'flex',gap:10,alignItems:'flex-end',flexWrap:'wrap'}}>
+              <div style={{flex:1,minWidth:120}}>
+                <label style={{fontSize:11,color:'#666',display:'block',marginBottom:4}}>Start date</label>
+                <input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} style={{width:'100%',padding:'7px 9px',border:'1px solid #e0e0e0',borderRadius:7,fontSize:13,fontFamily:'inherit',outline:'none',boxSizing:'border-box',background:'#fff'}}/>
+              </div>
+              <div style={{width:110}}>
+                <label style={{fontSize:11,color:'#666',display:'block',marginBottom:4}}>Number of days</label>
+                <input type="number" min={1} max={60} value={numDays} onChange={e=>setNumDays(Math.max(1,Math.min(60,+e.target.value||1)))} style={{width:'100%',padding:'7px 9px',border:'1px solid #e0e0e0',borderRadius:7,fontSize:13,fontFamily:'inherit',outline:'none',boxSizing:'border-box',background:'#fff'}}/>
+              </div>
+            </div>
+            {dates.length>0&&(
+              <div style={{display:'flex',flexWrap:'wrap',gap:4,marginTop:10}}>
+                {dates.map(d=><span key={d} style={{background:'#E6F1FB',color:'#0C447C',borderRadius:4,padding:'3px 8px',fontSize:12}}>{d}</span>)}
+              </div>
+            )}
+          </div>
+        </Fld>
+
+        {/* Member picker with status colors */}
+        <Fld label={
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+            <span>Select 2 team members</span>
+            {!showAll&&otherMembers.length>0&&(
+              <button onClick={()=>setShowAll(true)} style={{background:'none',border:'none',cursor:'pointer',color:'#534AB7',fontSize:11,fontWeight:500,padding:0}}>
+                + show {otherMembers.length} more
+              </button>
+            )}
+            {showAll&&availableMembers.length>0&&(
+              <button onClick={()=>setShowAll(false)} style={{background:'none',border:'none',cursor:'pointer',color:'#888',fontSize:11,padding:0}}>
+                show available only
+              </button>
+            )}
+          </div>
+        }>
+          <div style={{display:'flex',flexDirection:'column',gap:4,maxHeight:220,overflowY:'auto'}}>
+            {displayMembers.map(m=>{
+              const isPicked=picked.includes(m.id);
+              const st=memberStatusForDates(m);
+              const ss=MEMBER_STATUS_STYLE[st];
+              const mi=mIdx(m.id);
+              // Selection uses the status border color (darker shade) for the ring
+              const selBorderColor={available:'#0F6E56',assigned:'#854F0B',unavailable:'#A32D2D',unknown:'#5F5E5A'}[st];
+              return (
+                <div key={m.id} onClick={()=>tp(m.id)}
+                  style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',borderRadius:8,cursor:'pointer',
+                    border:isPicked?`2px solid ${selBorderColor}`:`1px solid ${ss.border}`,
+                    background:ss.bg,
+                    transition:'border .1s',
+                    boxSizing:'border-box'}}>
+                  <Avatar name={m.name} idx={mi} size={24}/>
+                  <span style={{fontSize:13,flex:1,fontWeight:500,color:ss.color}}>{m.name}</span>
+                  <span style={{fontSize:10,padding:'1px 6px',borderRadius:4,background:'rgba(0,0,0,.06)',color:ss.color,fontWeight:500}}>{ss.label}</span>
+                  {isPicked
+                    ? <div style={{width:18,height:18,borderRadius:'50%',background:selBorderColor,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+                        <span style={{color:'#fff',fontSize:10,fontWeight:700,lineHeight:1}}>✓</span>
+                      </div>
+                    : <div style={{width:18,height:18,borderRadius:'50%',border:`1px solid ${ss.border}`,flexShrink:0}}/>
+                  }
+                </div>
+              );
+            })}
+            {displayMembers.length===0&&<div style={{fontSize:13,color:'#bbb',padding:'8px 0'}}>No members yet.</div>}
+          </div>
+        </Fld>
+
+        <Fld label={`Link claims (up to 4) — ${claimIds.length}/4 selected`}>
+          <div style={{display:'flex',flexDirection:'column',gap:4}}>
+            {claimIds.length>0&&claimIds.map(cid=>{
+              const c=claims.find(x=>x.id===cid); if(!c) return null;
+              const sm=STATUS_META[getClaimStatus(c,assignments)]||STATUS_META.open;
+              return (
+                <div key={cid} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 10px',borderRadius:8,border:'1px solid #534AB7',background:'#EEEDFE'}}>
+                  <div style={{width:8,height:8,borderRadius:'50%',background:sm.color,flexShrink:0}}/>
+                  <span style={{fontSize:13,flex:1,color:'#3C3489',fontWeight:500}}>{c.name}</span>
+                  {c.location&&<span style={{fontSize:11,color:'#7B74D6'}}>{c.location}</span>}
+                  <button onClick={()=>toggleClaim(cid)} style={{background:'none',border:'none',cursor:'pointer',color:'#7B74D6',fontSize:16,padding:'0 2px',lineHeight:1}}>×</button>
+                </div>
+              );
+            })}
+            {claimIds.length===0&&<div style={{fontSize:12,color:'#bbb'}}>No claims linked yet.</div>}
+            <button onClick={()=>setShowClaimBrowser(true)}
+              style={{...sBtn(claimIds.length>=4?'#f5f5f5':'#f5f5f5',claimIds.length>=4?'#bbb':'#534AB7','1px solid '+(claimIds.length>=4?'#e0e0e0':'#534AB7')),
+                padding:'7px 12px',fontSize:13,marginTop:4,cursor:claimIds.length>=4?'not-allowed':'pointer'}}
+              disabled={claimIds.length>=4}>
+              {claimIds.length>=4?'Maximum 4 claims reached':'+ Browse claims'}
+            </button>
+          </div>
+        </Fld>
+
+        {/* Claim browser overlay */}
+        {showClaimBrowser&&(
+          <ClaimBrowserOverlay
+            claims={claims}
+            assignments={assignments}
+            selectedIds={claimIds}
+            onToggle={toggleClaim}
+            onClose={()=>setShowClaimBrowser(false)}
+            maxReached={claimIds.length>=4}
+          />
+        )}
+
+        <Fld label="Notes (optional)"><textarea value={task} onChange={e=>setTask(e.target.value)} placeholder="Any notes about this assignment..." rows={2} style={{resize:'vertical'}}/></Fld>
+
+        <Act>
+          {assignId&&<Btn danger onClick={()=>setConfirmDel(true)}>Delete pair</Btn>}
+          <Btn onClick={()=>setModal(null)}>Cancel</Btn>
+          <Btn primary onClick={save}>{assignId?'Save changes':'Create pair'}</Btn>
+        </Act>
+      </MW>
+    );
+  }
+
+  function MW({ title, children, wide }){
+    return (
+      <div onClick={e=>e.target===e.currentTarget&&setModal(null)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,.45)',zIndex:200,display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'40px 16px 16px',overflowY:'auto'}}>
+        <div style={{background:'#fff',borderRadius:12,border:'1px solid #e0e0e0',padding:24,width:'100%',maxWidth:wide?560:460}}>
+          <h3 style={{fontSize:16,fontWeight:600,marginBottom:16}}>{title}</h3>
+          {children}
+        </div>
+      </div>
+    );
+  }
+  function Fld({ label, children }){ return <div style={{marginBottom:14}}><div style={{display:'block',fontSize:12,fontWeight:500,color:'#666',marginBottom:5}}>{label}</div>{children}</div>; }
+  function Act({ children }){ return <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:20,flexWrap:'wrap'}}>{children}</div>; }
+  function Btn({ children, onClick, primary, danger }){
+    return <button onClick={onClick} style={{borderRadius:8,padding:'8px 16px',fontSize:13,cursor:'pointer',fontFamily:'inherit',background:primary?'#534AB7':danger?'#FCEBEB':'transparent',color:primary?'#fff':danger?'#791F1F':'#1a1a1a',border:primary?'none':danger?'1px solid #F09595':'1px solid #e0e0e0'}}>{children}</button>;
+  }
+
+  // ── Day view ─────────────────────────────────────────────────────────────────
+  function DayView(){
+    const dkk=dk(currentDate),as=getAssigns(dkk);
+    const groups={assigned:[],available:[],unavailable:[],unknown:[]};
+    members.forEach(m=>{ const s=getMemberDayStatus(m,dkk); (groups[s]||(groups.unknown)).push(m); });
+    const META={assigned:{label:'Assigned',color:'#633806'},available:{label:'Available',color:'#085041'},unavailable:{label:'Unavailable',color:'#791F1F'},unknown:{label:'Unknown',color:'#999'}};
+    return (
+      <div style={{display:'flex',flexDirection:'column',gap:12}}>
+        <div style={{background:'#fff',border:'1px solid #e0e0e0',borderRadius:12,padding:16}}>
+          <div style={{fontSize:14,fontWeight:600,marginBottom:12}}>Assignments</div>
+          {as.length===0&&<div style={{fontSize:13,color:'#999'}}>No assignments for this day.</div>}
+          {as.map(a=>{
+            const m1=getMember(a.member1),m2=getMember(a.member2); if(!m1||!m2) return null;
+            const linkedClaims=(a.claimIds||[]).map(cid=>claims.find(c=>c.id===cid)).filter(Boolean);
+            return <div key={a.id} style={{background:'#f9f9f9',border:'1px solid #efefef',borderRadius:8,padding:'10px 12px',display:'flex',alignItems:'center',gap:10,marginBottom:6}}>
+              <div style={{display:'flex'}}><Avatar name={m1.name} idx={mIdx(m1.id)} size={24}/><Avatar name={m2.name} idx={mIdx(m2.id)} size={24}/></div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:13,fontWeight:500}}>{m1.name} & {m2.name}</div>
+                <div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:3}}>
+                  {linkedClaims.map(c=><span key={c.id} style={{fontSize:11,color:'#633806',background:'#FAEEDA',borderRadius:4,padding:'1px 6px',display:'inline-block'}}>{c.name}</span>)}
+                </div>
+                {a.task&&<div style={{fontSize:12,color:'#888',marginTop:2,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.task}</div>}
+              </div>
+              <button onClick={()=>setModal({type:'pair',id:a.id})} style={{background:'none',border:'none',color:'#bbb',cursor:'pointer',fontSize:18,padding:'2px 6px',borderRadius:4,lineHeight:1}}>⋮</button>
+            </div>;
+          })}
+          <button onClick={()=>setModal({type:'pair',id:null})} style={{width:'100%',background:'none',border:'1px dashed #e0e0e0',borderRadius:8,padding:8,fontSize:13,color:'#999',cursor:'pointer',marginTop:4}}>+ Add pair assignment</button>
+        </div>
+        <div style={{background:'#fff',border:'1px solid #e0e0e0',borderRadius:12,padding:16}}>
+          <div style={{fontSize:14,fontWeight:600,marginBottom:12}}>Availability</div>
+          <div style={{display:'flex',gap:24,flexWrap:'wrap'}}>
+            {Object.entries(META).map(([key,{label,color}])=>(
+              <div key={key}>
+                <div style={{fontSize:12,fontWeight:500,color,marginBottom:6}}>{label} ({groups[key]?.length||0})</div>
+                {(groups[key]?.length||0)===0?<span style={{fontSize:12,color:'#bbb'}}>None</span>:
+                  groups[key].map(m=>(
+                    <div key={m.id} style={{display:'flex',alignItems:'center',gap:6,marginBottom:4,cursor:'pointer'}} onClick={()=>setPersonView(m.id)}>
+                      <Avatar name={m.name} idx={mIdx(m.id)} size={20}/>
+                      <span style={{fontSize:13}}>{m.name}</span>
+                    </div>
+                  ))
+                }
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function WeekView(){
+    const d=new Date(currentDate),dow=d.getDay(),diff=dow===0?-6:1-dow;
+    d.setDate(d.getDate()+diff);
+    const days=Array.from({length:7},(_,i)=>{const dd=new Date(d);dd.setDate(d.getDate()+i);return dd;});
+    const tod=todayKey();
+    return (
+      <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:6}}>
+        {days.map(dd=>{
+          const dkk=dk(dd),isT=dkk===tod,as=getAssigns(dkk);
+          const availCount=members.filter(m=>getMemberDayStatus(m,dkk)==='available').length;
+          const assignedCount=members.filter(m=>getMemberDayStatus(m,dkk)==='assigned').length;
+          return <div key={dkk} onClick={()=>goDay(dkk)} style={{background:isT?'#E6F1FB':'#fff',border:`1px solid ${isT?'#185FA5':'#e0e0e0'}`,borderRadius:8,padding:'8px 6px',minHeight:90,cursor:'pointer'}}>
+            <div style={{fontSize:10,color:'#bbb',textTransform:'uppercase',letterSpacing:'.04em'}}>{dd.toLocaleDateString('en',{weekday:'short'})}</div>
+            <div style={{fontSize:17,fontWeight:600,margin:'2px 0 4px',color:isT?'#0C447C':'#1a1a1a'}}>{dd.getDate()}</div>
+            {/* Availability summary */}
+            <div style={{display:'flex',gap:4,marginBottom:4,flexWrap:'wrap'}}>
+              {availCount>0&&<span style={{fontSize:9,borderRadius:3,padding:'1px 4px',background:'#E1F5EE',color:'#085041',fontWeight:500}}>{availCount} avail</span>}
+              {assignedCount>0&&<span style={{fontSize:9,borderRadius:3,padding:'1px 4px',background:'#FAEEDA',color:'#633806',fontWeight:500}}>{assignedCount} asgn</span>}
+            </div>
+            {as.map(a=>{const m1=getMember(a.member1),m2=getMember(a.member2);if(!m1||!m2)return null;const i=mIdx(a.member1);return<div key={a.id} style={{fontSize:10,borderRadius:4,padding:'2px 4px',marginBottom:2,background:LCOLORS[i%LCOLORS.length],color:TCOLORS[i%TCOLORS.length],overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{initials(m1.name)}+{initials(m2.name)}</div>;})}
+          </div>;
+        })}
+      </div>
+    );
+  }
+
+  function MonthView(){
+    const yr=currentDate.getFullYear(),mo=currentDate.getMonth();
+    const first=new Date(yr,mo,1),last=new Date(yr,mo+1,0);
+    const startOff=first.getDay()===0?6:first.getDay()-1;
+    const tod=todayKey();
+    const cells=[];
+    for(let i=0;i<startOff;i++) cells.push({d:new Date(yr,mo,1-startOff+i),other:true});
+    for(let d=1;d<=last.getDate();d++) cells.push({d:new Date(yr,mo,d),other:false});
+    const rem=7-((startOff+last.getDate())%7);
+    if(rem<7) for(let i=1;i<=rem;i++) cells.push({d:new Date(yr,mo+1,i),other:true});
+    return (
+      <div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:3,marginBottom:3}}>
+          {DAYS7.map(d=><div key={d} style={{fontSize:11,fontWeight:600,color:'#bbb',textAlign:'center',padding:'5px 0',textTransform:'uppercase',letterSpacing:'.05em'}}>{d}</div>)}
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:3}}>
+          {cells.map(({d,other},i)=>{
+            const dkk=dk(d),isT=dkk===tod,as=getAssigns(dkk);
+            const availCount=!other?members.filter(m=>getMemberDayStatus(m,dkk)==='available').length:0;
+            return <div key={i} onClick={()=>goDay(dkk)} style={{background:isT?'#E6F1FB':'#fff',border:`1px solid ${isT?'#185FA5':'#e0e0e0'}`,borderRadius:8,padding:5,minHeight:68,cursor:'pointer',opacity:other?.4:1}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:3}}>
+                <span style={{fontSize:12,fontWeight:500,color:isT?'#0C447C':'#1a1a1a'}}>{d.getDate()}</span>
+                {availCount>0&&!other&&<span style={{fontSize:9,borderRadius:3,padding:'1px 4px',background:'#E1F5EE',color:'#085041',fontWeight:500}}>{availCount}</span>}
+              </div>
+              {as.slice(0,2).map(a=>{const m1=getMember(a.member1),m2=getMember(a.member2);if(!m1||!m2)return null;const idx=mIdx(a.member1);return<div key={a.id} style={{fontSize:9,borderRadius:3,padding:'2px 3px',marginBottom:2,background:LCOLORS[idx%LCOLORS.length],color:TCOLORS[idx%TCOLORS.length],overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{initials(m1.name)}+{initials(m2.name)}</div>;})}
+              {as.length>2&&<div style={{fontSize:9,borderRadius:3,padding:'2px 3px',background:'#eee',color:'#666'}}>+{as.length-2}</div>}
+            </div>;
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  const tabBtn=(active)=>({background:'transparent',color:active?'#1a1a1a':'#888',border:'none',borderBottom:active?'2px solid #534AB7':'2px solid transparent',padding:'12px 16px',fontSize:14,fontWeight:active?600:400,cursor:'pointer',fontFamily:'inherit',marginBottom:-1,whiteSpace:'nowrap'});
+  const navBtn=(active)=>({background:active?'#EEEDFE':'transparent',color:active?'#3C3489':'#666',border:active?'1px solid #534AB7':'1px solid #e0e0e0',borderRadius:8,padding:'6px 14px',fontSize:13,cursor:'pointer',fontFamily:'inherit'});
+  const openClaims=claims.filter(c=>getClaimStatus(c,assignments)==='open').length;
+
+  return (
+    <div style={{fontFamily:'system-ui,-apple-system,sans-serif',background:'#f5f5f5',minHeight:'100vh',display:'flex',flexDirection:'column'}}>
+      <div style={{background:'#fff',borderBottom:'1px solid #e0e0e0',padding:'0 16px',display:'flex',alignItems:'center',position:'sticky',top:0,zIndex:50}}>
+        <span style={{fontSize:16,fontWeight:700,marginRight:20,padding:'14px 0',whiteSpace:'nowrap'}}>Team planner</span>
+        <button style={tabBtn(tab==='planner')} onClick={()=>{ setTab('planner'); setPersonView(null); }}>Planner</button>
+        <button style={tabBtn(tab==='claims')} onClick={()=>setTab('claims')}>
+          Claims{openClaims>0&&<span style={{background:'#FAEEDA',color:'#633806',borderRadius:10,padding:'1px 6px',fontSize:11,marginLeft:6,fontWeight:500}}>{openClaims} open</span>}
+        </button>
+        {tab==='planner'&&!personView&&(
+          <div style={{display:'flex',gap:4,marginLeft:'auto'}}>
+            {['day','week','month'].map(v=><button key={v} style={navBtn(view===v)} onClick={()=>setView(v)}>{v.charAt(0).toUpperCase()+v.slice(1)}</button>)}
+          </div>
+        )}
+      </div>
+
+      {tab==='claims'
+        ? <div style={{padding:20,maxWidth:860,margin:'0 auto',width:'100%',boxSizing:'border-box'}}>
+            <ClaimsTab claims={claims} assignments={assignments} members={members} updateData={updateData}/>
+          </div>
+        : (
+          <div style={{display:'grid',gridTemplateColumns:'200px 1fr',flex:1}}>
+            <div style={{background:'#fff',borderRight:'1px solid #e0e0e0',padding:16,alignSelf:'start',position:'sticky',top:49,maxHeight:'calc(100vh - 49px)',overflowY:'auto'}}>
+              <div style={{fontSize:11,fontWeight:600,color:'#bbb',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:10}}>Team</div>
+              <div style={{display:'flex',flexDirection:'column',gap:3,marginBottom:14}}>
+                {members.map((m,i)=>(
+                  <div key={m.id} onClick={()=>setPersonView(personView===m.id?null:m.id)}
+                    style={{display:'flex',alignItems:'center',gap:8,padding:'7px 8px',borderRadius:8,cursor:'pointer',
+                      border:`1px solid ${personView===m.id?COLORS[i%COLORS.length]:'transparent'}`,
+                      background:personView===m.id?LCOLORS[i%LCOLORS.length]:'transparent'}}>
+                    <Avatar name={m.name} idx={i} size={26}/>
+                    <span style={{fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:personView===m.id?TCOLORS[i%TCOLORS.length]:'#1a1a1a'}}>{m.name}</span>
+                  </div>
+                ))}
+              </div>
+              <button onClick={()=>setModal({type:'addMember'})} style={{width:'100%',background:'none',border:'1px dashed #e0e0e0',borderRadius:8,padding:7,fontSize:13,color:'#bbb',cursor:'pointer'}}>+ Add member</button>
+            </div>
+
+            <div style={{padding:20}}>
+              {personView
+                ? <PersonView memberId={personView} members={members} assignments={assignments} updateData={updateData} onClose={()=>setPersonView(null)}/>
+                : <>
+                    <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:20,flexWrap:'wrap'}}>
+                      <button onClick={()=>navigate(-1)} style={{background:'none',border:'1px solid #e0e0e0',borderRadius:8,padding:'5px 11px',cursor:'pointer',fontSize:15,color:'#666',lineHeight:1}}>‹</button>
+                      <button onClick={()=>navigate(1)} style={{background:'none',border:'1px solid #e0e0e0',borderRadius:8,padding:'5px 11px',cursor:'pointer',fontSize:15,color:'#666',lineHeight:1}}>›</button>
+                      <div style={{flex:1,position:'relative'}}>
+                        <button onClick={()=>setShowDatePicker(v=>!v)} style={{background:'none',border:'none',cursor:'pointer',padding:'4px 8px',borderRadius:8,fontSize:16,fontWeight:600,color:'#1a1a1a',fontFamily:'inherit',display:'flex',alignItems:'center',gap:6}}>
+                          {viewTitle()}<span style={{fontSize:11,color:'#bbb',fontWeight:400}}>▾</span>
+                        </button>
+                        {showDatePicker&&<MiniCalendar date={currentDate} onSelect={d=>{setCurrentDate(d);setView('day');setShowDatePicker(false);}} onClose={()=>setShowDatePicker(false)}/>}
+                      </div>
+                      <button onClick={()=>{setCurrentDate(new Date());setShowDatePicker(false);}} style={{background:'none',border:'1px solid #e0e0e0',borderRadius:8,padding:'5px 12px',fontSize:12,cursor:'pointer',color:'#666',fontFamily:'inherit'}}>Today</button>
+                    </div>
+                    {view==='day'&&<DayView/>}
+                    {view==='week'&&<WeekView/>}
+                    {view==='month'&&<MonthView/>}
+                  </>
+              }
+            </div>
+          </div>
+        )
+      }
+
+      {modal?.type==='addMember'&&<AddMemberModal/>}
+      {modal?.type==='pair'&&<PairModal assignId={modal.id}/>}
+    </div>
+  );
+}
+
+
+// ── Drive-connected wrapper ───────────────────────────────────────────────────
+function App(){
+  const [data, setData] = useState(null);
+  const [driveReady, setDriveReady] = useState(false);
+
+  useEffect(()=>{
+    window._onDriveLoaded = (saved) => {
+      if(saved && saved.members){
+        setData(saved);
+      } else {
+        setData(INIT_DATA);
+      }
+      setDriveReady(true);
+    };
+  },[]);
+
+  if(!driveReady){
+    return (
+      <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',flexDirection:'column',gap:12,color:'#666'}}>
+        <div style={{fontSize:15}}>Connecting to Google Drive...</div>
+      </div>
+    );
+  }
+
+  return <TeamPlannerWithDrive initialData={data}/>;
+}
+
+function TeamPlannerWithDrive({ initialData }){
+  const [data, setData] = useState(initialData || INIT_DATA);
+
+  function updateData(fn){
+    setData(prev=>{
+      const next=JSON.parse(JSON.stringify(prev));
+      fn(next);
+      return next;
+    });
+  }
+
+  return (
+    <div style={{fontFamily:'system-ui,-apple-system,sans-serif',background:'#f5f5f5',minHeight:'100vh',display:'flex',flexDirection:'column'}}>
+      <TeamPlannerInner data={data} updateData={updateData}/>
+    </div>
+  );
+}
+
+// Rename inner function
+function TeamPlannerInner({ data, updateData }){
+  return <TeamPlannerCore data={data} updateData={updateData}/>;
+}
+
+function TeamPlannerCore({ data: externalData, updateData: externalUpdateData }){
+  const [view,setView]=useState('day');
+  const [tab,setTab]=useState('planner');
+  const [currentDate,setCurrentDate]=useState(new Date());
+  const [modal,setModal]=useState(null);
+  const [showDatePicker,setShowDatePicker]=useState(false);
+  const [personView,setPersonView]=useState(null);
+
+  const data = externalData;
+  const members=data.members, assignments=data.assignments, claims=data.claims;
+
+  function updateData(fn){ externalUpdateData(fn); }
+
+  function mIdx(id){ return members.findIndex(m=>m.id===id) }
+  function getMember(id){ return members.find(m=>m.id===id) }
+  function getAssigns(d){ return assignments.filter(a=>a.dates?.includes(d)) }
+
+  function navigate(dir){
+    setCurrentDate(prev=>{ const d=new Date(prev);
+      if(view==='day') d.setDate(d.getDate()+dir);
+      else if(view==='week') d.setDate(d.getDate()+dir*7);
+      else d.setMonth(d.getMonth()+dir);
+      return d;
+    });
+  }
+  function goDay(dStr){ setCurrentDate(pd(dStr)); setView('day'); setPersonView(null); }
+
+  function viewTitle(){
+    if(view==='day') return currentDate.toLocaleDateString('en',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+    if(view==='month') return `${MONTHS[currentDate.getMonth()]} ${currentDate.getFullYear()}`;
+    const d=new Date(currentDate),dow=d.getDay(),diff=dow===0?-6:1-dow;
+    d.setDate(d.getDate()+diff); const end=new Date(d); end.setDate(d.getDate()+6);
+    return d.toLocaleDateString('en',{day:'numeric',month:'short'})+' – '+end.toLocaleDateString('en',{day:'numeric',month:'short',year:'numeric'});
+  }
+
+  function getMemberDayStatus(m,dStr){
+    if(assignments.some(a=>(a.member1===m.id||a.member2===m.id)&&a.dates?.includes(dStr))) return 'assigned';
+    return getAvailStatus(m,dStr);
+  }
+
+  function AddMemberModal(){
+    const [name,setName]=useState('');
+    function save(){ if(!name.trim()) return; updateData(d=>d.members.push({id:'m_'+Date.now(),name:name.trim(),availability:{availableDates:[],unavailableDates:[]}})); setModal(null); }
+    return <MW title="Add team member"><Fld label="Full name"><input autoFocus value={name} onChange={e=>setName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&save()} placeholder="e.g. Anna Berg"/></Fld><Act><Btn onClick={()=>setModal(null)}>Cancel</Btn><Btn primary onClick={save}>Add</Btn></Act></MW>;
+  }
+
+  function PairModal({ assignId }){
+    const ex = assignId ? assignments.find(x=>x.id===assignId) : null;
+    const [picked,setPicked]=useState(ex?[ex.member1,ex.member2]:[]);
+    const [claimIds,setClaimIds]=useState(ex?.claimIds||[]);
+    const [task,setTask]=useState(ex?.task||'');
+    const [startDate,setStartDate]=useState(ex?.dates?.[0]||dk(currentDate));
+    const [numDays,setNumDays]=useState(ex?.dates?.length||1);
+    const [showAll,setShowAll]=useState(false);
+    const [confirmDel,setConfirmDel]=useState(false);
+    const [showClaimBrowser,setShowClaimBrowser]=useState(false);
+    const dates=Array.from({length:numDays},(_,i)=>addDays(startDate,i));
+    function tp(id){ setPicked(prev=>prev.includes(id)?prev.filter(x=>x!==id):prev.length<2?[...prev,id]:prev); }
+    function toggleClaim(id){ setClaimIds(prev=>prev.includes(id)?prev.filter(x=>x!==id):[...prev,id].slice(0,4)); }
+    function memberStatusForDates(m){
+      const isAssigned=dates.some(d=>assignments.some(a=>a.id!==assignId&&(a.member1===m.id||a.member2===m.id)&&a.dates?.includes(d)));
+      if(isAssigned) return 'assigned';
+      const av=m.availability||{};
+      const hasAvail=dates.some(d=>av.availableDates?.includes(d));
+      const hasUnavail=dates.some(d=>av.unavailableDates?.includes(d));
+      if(hasUnavail) return 'unavailable';
+      if(hasAvail) return 'available';
+      return 'unknown';
+    }
+    const MEMBER_STATUS_STYLE={
+      available:{bg:'#E1F5EE',border:'#9FE1CB',color:'#085041',label:'Available'},
+      assigned:{bg:'#FAEEDA',border:'#FAC775',color:'#633806',label:'Assigned'},
+      unavailable:{bg:'#FCEBEB',border:'#F7C1C1',color:'#791F1F',label:'Unavailable'},
+      unknown:{bg:'#f5f5f5',border:'#e0e0e0',color:'#888',label:'Unknown'},
+    };
+    const sortedMembers=[...members].sort((a,b)=>{
+      const order={available:0,unknown:1,assigned:2,unavailable:3};
+      return (order[memberStatusForDates(a)]||1)-(order[memberStatusForDates(b)]||1);
+    });
+    const availableMembers=sortedMembers.filter(m=>memberStatusForDates(m)==='available');
+    const otherMembers=sortedMembers.filter(m=>memberStatusForDates(m)!=='available');
+    const displayMembers=showAll?sortedMembers:availableMembers.length>0?availableMembers:sortedMembers;
+    function save(){
+      if(picked.length!==2){alert('Select exactly 2 members');return;}
+      if(!dates.length){alert('Add at least one date');return;}
+      if(assignId){
+        updateData(d=>{const x=d.assignments.find(x=>x.id===assignId);x.member1=picked[0];x.member2=picked[1];x.task=task;x.claimIds=claimIds;x.dates=dates;});
+      } else {
+        updateData(d=>d.assignments.push({id:'a_'+Date.now(),member1:picked[0],member2:picked[1],task,claimIds,dates}));
+      }
+      setModal(null);
+    }
+    function doDelete(){ updateData(d=>{d.assignments=d.assignments.filter(x=>x.id!==assignId);}); setModal(null); }
+    return (
+      <MW title={assignId?'Edit pair assignment':'New pair assignment'} wide>
+        {confirmDel&&<Confirm message="Delete this pair assignment?" onConfirm={doDelete} onCancel={()=>setConfirmDel(false)}/>}
+        <Fld label="Assignment dates">
+          <div style={{background:'#f9f9f9',border:'1px solid #e0e0e0',borderRadius:10,padding:12}}>
+            <div style={{display:'flex',gap:10,alignItems:'flex-end',flexWrap:'wrap'}}>
+              <div style={{flex:1,minWidth:120}}>
+                <label style={{fontSize:11,color:'#666',display:'block',marginBottom:4}}>Start date</label>
+                <input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} style={{width:'100%',padding:'7px 9px',border:'1px solid #e0e0e0',borderRadius:7,fontSize:13,outline:'none',boxSizing:'border-box',background:'#fff'}}/>
+              </div>
+              <div style={{width:110}}>
+                <label style={{fontSize:11,color:'#666',display:'block',marginBottom:4}}>Number of days</label>
+                <input type="number" min={1} max={60} value={numDays} onChange={e=>setNumDays(Math.max(1,Math.min(60,+e.target.value||1)))} style={{width:'100%',padding:'7px 9px',border:'1px solid #e0e0e0',borderRadius:7,fontSize:13,outline:'none',boxSizing:'border-box',background:'#fff'}}/>
+              </div>
+            </div>
+            {dates.length>0&&<div style={{display:'flex',flexWrap:'wrap',gap:4,marginTop:10}}>{dates.map(d=><span key={d} style={{background:'#E6F1FB',color:'#0C447C',borderRadius:4,padding:'3px 8px',fontSize:12}}>{d}</span>)}</div>}
+          </div>
+        </Fld>
+        <Fld label={<div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><span>Select 2 team members</span>{!showAll&&otherMembers.length>0&&<button onClick={()=>setShowAll(true)} style={{background:'none',border:'none',cursor:'pointer',color:'#534AB7',fontSize:11,fontWeight:500,padding:0}}>+ show {otherMembers.length} more</button>}{showAll&&availableMembers.length>0&&<button onClick={()=>setShowAll(false)} style={{background:'none',border:'none',cursor:'pointer',color:'#888',fontSize:11,padding:0}}>show available only</button>}</div>}>
+          <div style={{display:'flex',flexDirection:'column',gap:4,maxHeight:220,overflowY:'auto'}}>
+            {displayMembers.map(m=>{
+              const isPicked=picked.includes(m.id);
+              const st=memberStatusForDates(m);
+              const ss=MEMBER_STATUS_STYLE[st];
+              const mi=mIdx(m.id);
+              const selBorderColor={available:'#0F6E56',assigned:'#854F0B',unavailable:'#A32D2D',unknown:'#5F5E5A'}[st];
+              return (
+                <div key={m.id} onClick={()=>tp(m.id)} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',borderRadius:8,cursor:'pointer',border:isPicked?`2px solid ${selBorderColor}`:`1px solid ${ss.border}`,background:ss.bg,transition:'border .1s',boxSizing:'border-box'}}>
+                  <Avatar name={m.name} idx={mi} size={24}/>
+                  <span style={{fontSize:13,flex:1,fontWeight:500,color:ss.color}}>{m.name}</span>
+                  <span style={{fontSize:10,padding:'1px 6px',borderRadius:4,background:'rgba(0,0,0,.06)',color:ss.color,fontWeight:500}}>{ss.label}</span>
+                  {isPicked?<div style={{width:18,height:18,borderRadius:'50%',background:selBorderColor,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><span style={{color:'#fff',fontSize:10,fontWeight:700,lineHeight:1}}>✓</span></div>:<div style={{width:18,height:18,borderRadius:'50%',border:`1px solid ${ss.border}`,flexShrink:0}}/>}
+                </div>
+              );
+            })}
+          </div>
+        </Fld>
+        <Fld label={`Link claims (up to 4) — ${claimIds.length}/4 selected`}>
+          <div style={{display:'flex',flexDirection:'column',gap:4}}>
+            {claimIds.length>0&&claimIds.map(cid=>{
+              const c=claims.find(x=>x.id===cid); if(!c) return null;
+              const sm=STATUS_META[getClaimStatus(c,assignments)]||STATUS_META.open;
+              return <div key={cid} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 10px',borderRadius:8,border:'1px solid #534AB7',background:'#EEEDFE'}}><div style={{width:8,height:8,borderRadius:'50%',background:sm.color,flexShrink:0}}/><span style={{fontSize:13,flex:1,color:'#3C3489',fontWeight:500}}>{c.name}</span>{c.location&&<span style={{fontSize:11,color:'#7B74D6'}}>{c.location}</span>}<button onClick={()=>toggleClaim(cid)} style={{background:'none',border:'none',cursor:'pointer',color:'#7B74D6',fontSize:16,padding:'0 2px',lineHeight:1}}>×</button></div>;
+            })}
+            {claimIds.length===0&&<div style={{fontSize:12,color:'#bbb'}}>No claims linked yet.</div>}
+            <button onClick={()=>setShowClaimBrowser(true)} style={{...sBtn(claimIds.length>=4?'#f5f5f5':'#f5f5f5',claimIds.length>=4?'#bbb':'#534AB7','1px solid '+(claimIds.length>=4?'#e0e0e0':'#534AB7')),padding:'7px 12px',fontSize:13,marginTop:4,cursor:claimIds.length>=4?'not-allowed':'pointer'}} disabled={claimIds.length>=4}>{claimIds.length>=4?'Maximum 4 claims reached':'+ Browse claims'}</button>
+          </div>
+        </Fld>
+        {showClaimBrowser&&<ClaimBrowserOverlay claims={claims} assignments={assignments} selectedIds={claimIds} onToggle={toggleClaim} onClose={()=>setShowClaimBrowser(false)} maxReached={claimIds.length>=4}/>}
+        <Fld label="Notes (optional)"><textarea value={task} onChange={e=>setTask(e.target.value)} placeholder="Any notes about this assignment..." rows={2} style={{resize:'vertical'}}/></Fld>
+        <Act>{assignId&&<Btn danger onClick={()=>setConfirmDel(true)}>Delete pair</Btn>}<Btn onClick={()=>setModal(null)}>Cancel</Btn><Btn primary onClick={save}>{assignId?'Save changes':'Create pair'}</Btn></Act>
+      </MW>
+    );
+  }
+
+  function MW({ title, children, wide }){
+    return <div onClick={e=>e.target===e.currentTarget&&setModal(null)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,.45)',zIndex:200,display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'40px 16px 16px',overflowY:'auto'}}><div style={{background:'#fff',borderRadius:12,border:'1px solid #e0e0e0',padding:24,width:'100%',maxWidth:wide?560:460}}><h3 style={{fontSize:16,fontWeight:600,marginBottom:16}}>{title}</h3>{children}</div></div>;
+  }
+  function Fld({ label, children }){ return <div style={{marginBottom:14}}><div style={{display:'block',fontSize:12,fontWeight:500,color:'#666',marginBottom:5}}>{label}</div>{children}</div>; }
+  function Act({ children }){ return <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:20,flexWrap:'wrap'}}>{children}</div>; }
+  function Btn({ children, onClick, primary, danger }){ return <button onClick={onClick} style={{borderRadius:8,padding:'8px 16px',fontSize:13,cursor:'pointer',background:primary?'#534AB7':danger?'#FCEBEB':'transparent',color:primary?'#fff':danger?'#791F1F':'#1a1a1a',border:primary?'none':danger?'1px solid #F09595':'1px solid #e0e0e0'}}>{children}</button>; }
+
+  function DayView(){
+    const dkk=dk(currentDate),as=getAssigns(dkk);
+    const groups={assigned:[],available:[],unavailable:[],unknown:[]};
+    members.forEach(m=>{ const s=getMemberDayStatus(m,dkk); (groups[s]||(groups.unknown)).push(m); });
+    const META={assigned:{label:'Assigned',color:'#633806'},available:{label:'Available',color:'#085041'},unavailable:{label:'Unavailable',color:'#791F1F'},unknown:{label:'Unknown',color:'#999'}};
+    return (
+      <div style={{display:'flex',flexDirection:'column',gap:12}}>
+        <div style={{background:'#fff',border:'1px solid #e0e0e0',borderRadius:12,padding:16}}>
+          <div style={{fontSize:14,fontWeight:600,marginBottom:12}}>Assignments</div>
+          {as.length===0&&<div style={{fontSize:13,color:'#999'}}>No assignments for this day.</div>}
+          {as.map(a=>{
+            const m1=getMember(a.member1),m2=getMember(a.member2); if(!m1||!m2) return null;
+            const linkedClaims=(a.claimIds||[]).map(cid=>claims.find(c=>c.id===cid)).filter(Boolean);
+            return <div key={a.id} style={{background:'#f9f9f9',border:'1px solid #efefef',borderRadius:8,padding:'10px 12px',display:'flex',alignItems:'center',gap:10,marginBottom:6}}>
+              <div style={{display:'flex'}}><Avatar name={m1.name} idx={mIdx(m1.id)} size={24}/><Avatar name={m2.name} idx={mIdx(m2.id)} size={24}/></div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:13,fontWeight:500}}>{m1.name} &amp; {m2.name}</div>
+                <div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:3}}>{linkedClaims.map(c=><span key={c.id} style={{fontSize:11,color:'#633806',background:'#FAEEDA',borderRadius:4,padding:'1px 6px',display:'inline-block'}}>{c.name}</span>)}</div>
+                {a.task&&<div style={{fontSize:12,color:'#888',marginTop:2,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.task}</div>}
+              </div>
+              <button onClick={()=>setModal({type:'pair',id:a.id})} style={{background:'none',border:'none',color:'#bbb',cursor:'pointer',fontSize:18,padding:'2px 6px',borderRadius:4,lineHeight:1}}>⋮</button>
+            </div>;
+          })}
+          <button onClick={()=>setModal({type:'pair',id:null})} style={{width:'100%',background:'none',border:'1px dashed #e0e0e0',borderRadius:8,padding:8,fontSize:13,color:'#999',cursor:'pointer',marginTop:4}}>+ Add pair assignment</button>
+        </div>
+        <div style={{background:'#fff',border:'1px solid #e0e0e0',borderRadius:12,padding:16}}>
+          <div style={{fontSize:14,fontWeight:600,marginBottom:12}}>Availability</div>
+          <div style={{display:'flex',gap:24,flexWrap:'wrap'}}>
+            {Object.entries(META).map(([key,{label,color}])=>(
+              <div key={key}>
+                <div style={{fontSize:12,fontWeight:500,color,marginBottom:6}}>{label} ({groups[key]?.length||0})</div>
+                {(groups[key]?.length||0)===0?<span style={{fontSize:12,color:'#bbb'}}>None</span>:groups[key].map(m=>(
+                  <div key={m.id} style={{display:'flex',alignItems:'center',gap:6,marginBottom:4,cursor:'pointer'}} onClick={()=>setPersonView(m.id)}>
+                    <Avatar name={m.name} idx={mIdx(m.id)} size={20}/>
+                    <span style={{fontSize:13}}>{m.name}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function WeekView(){
+    const d=new Date(currentDate),dow=d.getDay(),diff=dow===0?-6:1-dow;
+    d.setDate(d.getDate()+diff);
+    const days=Array.from({length:7},(_,i)=>{const dd=new Date(d);dd.setDate(d.getDate()+i);return dd;});
+    const tod=todayKey();
+    return (
+      <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:6}}>
+        {days.map(dd=>{
+          const dkk=dk(dd),isT=dkk===tod,as=getAssigns(dkk);
+          const availCount=members.filter(m=>getMemberDayStatus(m,dkk)==='available').length;
+          const assignedCount=members.filter(m=>getMemberDayStatus(m,dkk)==='assigned').length;
+          return <div key={dkk} onClick={()=>goDay(dkk)} style={{background:isT?'#E6F1FB':'#fff',border:`1px solid ${isT?'#185FA5':'#e0e0e0'}`,borderRadius:8,padding:'8px 6px',minHeight:90,cursor:'pointer'}}>
+            <div style={{fontSize:10,color:'#bbb',textTransform:'uppercase',letterSpacing:'.04em'}}>{dd.toLocaleDateString('en',{weekday:'short'})}</div>
+            <div style={{fontSize:17,fontWeight:600,margin:'2px 0 4px',color:isT?'#0C447C':'#1a1a1a'}}>{dd.getDate()}</div>
+            <div style={{display:'flex',gap:4,marginBottom:4,flexWrap:'wrap'}}>
+              {availCount>0&&<span style={{fontSize:9,borderRadius:3,padding:'1px 4px',background:'#E1F5EE',color:'#085041',fontWeight:500}}>{availCount} avail</span>}
+              {assignedCount>0&&<span style={{fontSize:9,borderRadius:3,padding:'1px 4px',background:'#FAEEDA',color:'#633806',fontWeight:500}}>{assignedCount} asgn</span>}
+            </div>
+            {as.map(a=>{const m1=getMember(a.member1),m2=getMember(a.member2);if(!m1||!m2)return null;const i=mIdx(a.member1);return<div key={a.id} style={{fontSize:10,borderRadius:4,padding:'2px 4px',marginBottom:2,background:LCOLORS[i%LCOLORS.length],color:TCOLORS[i%TCOLORS.length],overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{initials(m1.name)}+{initials(m2.name)}</div>;})}
+          </div>;
+        })}
+      </div>
+    );
+  }
+
+  function MonthView(){
+    const yr=currentDate.getFullYear(),mo=currentDate.getMonth();
+    const first=new Date(yr,mo,1),last=new Date(yr,mo+1,0);
+    const startOff=first.getDay()===0?6:first.getDay()-1;
+    const tod=todayKey();
+    const cells=[];
+    for(let i=0;i<startOff;i++) cells.push({d:new Date(yr,mo,1-startOff+i),other:true});
+    for(let d=1;d<=last.getDate();d++) cells.push({d:new Date(yr,mo,d),other:false});
+    const rem=7-((startOff+last.getDate())%7);
+    if(rem<7) for(let i=1;i<=rem;i++) cells.push({d:new Date(yr,mo+1,i),other:true});
+    return (
+      <div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:3,marginBottom:3}}>
+          {DAYS7.map(d=><div key={d} style={{fontSize:11,fontWeight:600,color:'#bbb',textAlign:'center',padding:'5px 0',textTransform:'uppercase',letterSpacing:'.05em'}}>{d}</div>)}
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:3}}>
+          {cells.map(({d,other},i)=>{
+            const dkk=dk(d),isT=dkk===tod,as=getAssigns(dkk);
+            const availCount=!other?members.filter(m=>getMemberDayStatus(m,dkk)==='available').length:0;
+            return <div key={i} onClick={()=>goDay(dkk)} style={{background:isT?'#E6F1FB':'#fff',border:`1px solid ${isT?'#185FA5':'#e0e0e0'}`,borderRadius:8,padding:5,minHeight:68,cursor:'pointer',opacity:other?.4:1}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:3}}>
+                <span style={{fontSize:12,fontWeight:500,color:isT?'#0C447C':'#1a1a1a'}}>{d.getDate()}</span>
+                {availCount>0&&!other&&<span style={{fontSize:9,borderRadius:3,padding:'1px 4px',background:'#E1F5EE',color:'#085041',fontWeight:500}}>{availCount}</span>}
+              </div>
+              {as.slice(0,2).map(a=>{const m1=getMember(a.member1),m2=getMember(a.member2);if(!m1||!m2)return null;const idx=mIdx(a.member1);return<div key={a.id} style={{fontSize:9,borderRadius:3,padding:'2px 3px',marginBottom:2,background:LCOLORS[idx%LCOLORS.length],color:TCOLORS[idx%TCOLORS.length],overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{initials(m1.name)}+{initials(m2.name)}</div>;})}
+              {as.length>2&&<div style={{fontSize:9,borderRadius:3,padding:'2px 3px',background:'#eee',color:'#666'}}>+{as.length-2}</div>}
+            </div>;
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  const tabBtn=(active)=>({background:'transparent',color:active?'#1a1a1a':'#888',border:'none',borderBottom:active?'2px solid #534AB7':'2px solid transparent',padding:'12px 16px',fontSize:14,fontWeight:active?600:400,cursor:'pointer',marginBottom:-1,whiteSpace:'nowrap'});
+  const navBtn=(active)=>({background:active?'#EEEDFE':'transparent',color:active?'#3C3489':'#666',border:active?'1px solid #534AB7':'1px solid #e0e0e0',borderRadius:8,padding:'6px 14px',fontSize:13,cursor:'pointer'});
+  const openClaims=claims.filter(c=>getClaimStatus(c,assignments)==='open').length;
+
+  return (
+    <>
+      <div style={{background:'#fff',borderBottom:'1px solid #e0e0e0',padding:'0 16px',display:'flex',alignItems:'center',position:'sticky',top:0,zIndex:50}}>
+        <span style={{fontSize:16,fontWeight:700,marginRight:20,padding:'14px 0',whiteSpace:'nowrap'}}>Team planner</span>
+        <button style={tabBtn(tab==='planner')} onClick={()=>{ setTab('planner'); setPersonView(null); }}>Planner</button>
+        <button style={tabBtn(tab==='claims')} onClick={()=>setTab('claims')}>
+          Claims{openClaims>0&&<span style={{background:'#FAEEDA',color:'#633806',borderRadius:10,padding:'1px 6px',fontSize:11,marginLeft:6,fontWeight:500}}>{openClaims} open</span>}
+        </button>
+        <button onClick={()=>window.saveToDrive(data)} style={{marginLeft:'auto',background:'#534AB7',color:'#fff',border:'none',borderRadius:8,padding:'7px 14px',fontSize:13,cursor:'pointer'}}>Save to Drive</button>
+        {tab==='planner'&&!personView&&(
+          <div style={{display:'flex',gap:4,marginLeft:12}}>
+            {['day','week','month'].map(v=><button key={v} style={navBtn(view===v)} onClick={()=>setView(v)}>{v.charAt(0).toUpperCase()+v.slice(1)}</button>)}
+          </div>
+        )}
+      </div>
+
+      {tab==='claims'
+        ? <div style={{padding:20,maxWidth:860,margin:'0 auto',width:'100%',boxSizing:'border-box'}}>
+            <ClaimsTab claims={claims} assignments={assignments} members={members} updateData={updateData}/>
+          </div>
+        : (
+          <div style={{display:'grid',gridTemplateColumns:'200px 1fr',flex:1}}>
+            <div style={{background:'#fff',borderRight:'1px solid #e0e0e0',padding:16,alignSelf:'start',position:'sticky',top:49,maxHeight:'calc(100vh - 49px)',overflowY:'auto'}}>
+              <div style={{fontSize:11,fontWeight:600,color:'#bbb',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:10}}>Team</div>
+              <div style={{display:'flex',flexDirection:'column',gap:3,marginBottom:14}}>
+                {members.map((m,i)=>(
+                  <div key={m.id} onClick={()=>setPersonView(personView===m.id?null:m.id)}
+                    style={{display:'flex',alignItems:'center',gap:8,padding:'7px 8px',borderRadius:8,cursor:'pointer',
+                      border:`1px solid ${personView===m.id?COLORS[i%COLORS.length]:'transparent'}`,
+                      background:personView===m.id?LCOLORS[i%LCOLORS.length]:'transparent'}}>
+                    <Avatar name={m.name} idx={i} size={26}/>
+                    <span style={{fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:personView===m.id?TCOLORS[i%TCOLORS.length]:'#1a1a1a'}}>{m.name}</span>
+                  </div>
+                ))}
+              </div>
+              <button onClick={()=>setModal({type:'addMember'})} style={{width:'100%',background:'none',border:'1px dashed #e0e0e0',borderRadius:8,padding:7,fontSize:13,color:'#bbb',cursor:'pointer'}}>+ Add member</button>
+            </div>
+            <div style={{padding:20}}>
+              {personView
+                ? <PersonView memberId={personView} members={members} assignments={assignments} updateData={updateData} onClose={()=>setPersonView(null)}/>
+                : <>
+                    <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:20,flexWrap:'wrap'}}>
+                      <button onClick={()=>navigate(-1)} style={{background:'none',border:'1px solid #e0e0e0',borderRadius:8,padding:'5px 11px',cursor:'pointer',fontSize:15,color:'#666',lineHeight:1}}>‹</button>
+                      <button onClick={()=>navigate(1)} style={{background:'none',border:'1px solid #e0e0e0',borderRadius:8,padding:'5px 11px',cursor:'pointer',fontSize:15,color:'#666',lineHeight:1}}>›</button>
+                      <div style={{flex:1,position:'relative'}}>
+                        <button onClick={()=>setShowDatePicker(v=>!v)} style={{background:'none',border:'none',cursor:'pointer',padding:'4px 8px',borderRadius:8,fontSize:16,fontWeight:600,color:'#1a1a1a',display:'flex',alignItems:'center',gap:6}}>
+                          {viewTitle()}<span style={{fontSize:11,color:'#bbb',fontWeight:400}}>▾</span>
+                        </button>
+                        {showDatePicker&&<MiniCalendar date={currentDate} onSelect={d=>{setCurrentDate(d);setView('day');setShowDatePicker(false);}} onClose={()=>setShowDatePicker(false)}/>}
+                      </div>
+                      <button onClick={()=>{setCurrentDate(new Date());setShowDatePicker(false);}} style={{background:'none',border:'1px solid #e0e0e0',borderRadius:8,padding:'5px 12px',fontSize:12,cursor:'pointer',color:'#666'}}>Today</button>
+                    </div>
+                    {view==='day'&&<DayView/>}
+                    {view==='week'&&<WeekView/>}
+                    {view==='month'&&<MonthView/>}
+                  </>
+              }
+            </div>
+          </div>
+        )
+      }
+      {modal?.type==='addMember'&&<AddMemberModal/>}
+      {modal?.type==='pair'&&<PairModal assignId={modal.id}/>}
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+
+</body>
+</html>
