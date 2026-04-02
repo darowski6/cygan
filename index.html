@@ -1108,7 +1108,7 @@ function TeamPlaner(){
         <span style={{fontSize:16,fontWeight:700,marginRight:20,padding:'14px 0',whiteSpace:'nowrap'}}>Planer zespołu</span>
         <button style={tabBtn(tab==='planner')} onClick={()=>{ setTab('planner'); setPersonView(null); }}>Planer</button>
         <button style={tabBtn(tab==='claims')} onClick={()=>setTab('claims')}>
-          Claims{openClaims>0&&<span style={{background:'#FAEEDA',color:'#633806',borderRadius:10,padding:'1px 6px',fontSize:11,marginLeft:6,fontWeight:500}}>{openClaims} otwarte</span>}
+          Szkody{openClaims>0&&<span style={{background:'#FAEEDA',color:'#633806',borderRadius:10,padding:'1px 6px',fontSize:11,marginLeft:6,fontWeight:500}}>{openClaims} otwarte</span>}
         </button>
         {tab==='planner'&&!personView&&(
           <div style={{display:'flex',gap:4,marginLeft:'auto'}}>
@@ -1507,7 +1507,7 @@ function TeamPlanerCore({ data: externalData, updateData: externalUpdateData, sa
         </div>
         <button style={tabBtn(tab==='planner')} onClick={()=>{ setTab('planner'); setPersonView(null); }}>Planer</button>
         <button style={tabBtn(tab==='claims')} onClick={()=>setTab('claims')}>
-          Claims{openClaims>0&&<span style={{background:'#FAEEDA',color:'#633806',borderRadius:10,padding:'1px 6px',fontSize:11,marginLeft:6,fontWeight:500}}>{openClaims} otwarte</span>}
+          Szkody{openClaims>0&&<span style={{background:'#FAEEDA',color:'#633806',borderRadius:10,padding:'1px 6px',fontSize:11,marginLeft:6,fontWeight:500}}>{openClaims} otwarte</span>}
         </button>
         <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:8}}>
           {saveState==='pending'&&<span style={{fontSize:11,color:'#bbb'}}>Unsaved...</span>}
