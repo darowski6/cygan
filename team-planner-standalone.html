@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Team Planner</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:#f5f5f5;color:#1a1a1a;min-height:100vh}
+:root{
+  --bg:#fff;--bg2:#f5f5f5;--bg3:#eee;--border:#e0e0e0;
+  --text:#1a1a1a;--text2:#666;--text3:#999;
+  --purple:#534AB7;--purple-light:#EEEDFE;--purple-text:#3C3489;
+  --teal:#0F6E56;--teal-light:#E1F5EE;--teal-text:#085041;
+  --blue:#185FA5;--blue-light:#E6F1FB;--blue-text:#0C447C;
+  --red:#A32D2D;--red-light:#FCEBEB;--red-text:#791F1F;
+  --green:#3B6D11;--green-light:#EAF3DE;--green-text:#27500A;
+  --amber:#854F0B;--amber-light:#FAEEDA;--amber-text:#633806;
+  --radius:8px;--radius-lg:12px
+}
+@media(prefers-color-scheme:dark){:root{
+  --bg:#1a1a1a;--bg2:#111;--bg3:#2a2a2a;--border:#333;
+  --text:#e8e8e8;--text2:#aaa;--text3:#555;
+  --purple-light:#3C3489;--purple-text:#CECBF6;
+  --teal-light:#085041;--teal-text:#9FE1CB;
+  --blue-light:#0C447C;--blue-text:#B5D4F4;
+  --red-light:#791F1F;--red-text:#F7C1C1;
+  --green-light:#27500A;--green-text:#C0DD97;
+  --amber-light:#633806;--amber-text:#FAC775;
+}}
+
+.app{display:flex;flex-direction:column;min-height:100vh}
+.topbar{background:var(--bg);border-bottom:1px solid var(--border);padding:12px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:50}
+.topbar h1{font-size:17px;font-weight:600}
+.nav{display:flex;gap:4px;margin-left:auto;flex-wrap:wrap}
+.nav-btn{background:none;border:1px solid var(--border);border-radius:var(--radius);padding:6px 14px;font-size:13px;cursor:pointer;color:var(--text2);transition:all .15s}
+.nav-btn:hover{background:var(--bg3)}
+.nav-btn.active{background:var(--purple-light);color:var(--purple-text);border-color:var(--purple)}
+.sync-btn{background:var(--purple);color:#fff;border:none;border-radius:var(--radius);padding:7px 14px;font-size:13px;cursor:pointer;white-space:nowrap}
+.sync-btn:hover{opacity:.9}
+.sync-btn:disabled{opacity:.5;cursor:not-allowed}
+.sync-status{font-size:12px;color:var(--text3);white-space:nowrap}
+
+.body-layout{display:grid;grid-template-columns:210px 1fr;flex:1}
+@media(max-width:600px){.body-layout{grid-template-columns:1fr}}
+.sidebar{background:var(--bg);border-right:1px solid var(--border);padding:16px;align-self:start;position:sticky;top:53px;max-height:calc(100vh - 53px);overflow-y:auto}
+.sidebar h2{font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px}
+.member-list{display:flex;flex-direction:column;gap:3px;margin-bottom:16px}
+.member-item{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:var(--radius);cursor:pointer;border:1px solid transparent;transition:all .15s}
+.member-item:hover{background:var(--bg2)}
+.member-item.selected{background:var(--blue-light);border-color:var(--blue)}
+.avatar{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;flex-shrink:0}
+.member-name{font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.member-item.selected .member-name{color:var(--blue-text)}
+.add-btn{width:100%;background:none;border:1px dashed var(--border);border-radius:var(--radius);padding:7px;font-size:13px;color:var(--text3);cursor:pointer;transition:all .15s;text-align:center}
+.add-btn:hover{border-color:var(--purple);color:var(--purple)}
+
+.content{padding:20px}
+.view-header{display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap}
+.view-header h2{font-size:16px;font-weight:600;flex:1}
+.arr-btn{background:none;border:1px solid var(--border);border-radius:var(--radius);padding:5px 11px;cursor:pointer;font-size:15px;color:var(--text2);line-height:1}
+.arr-btn:hover{background:var(--bg3)}
+.today-btn{background:none;border:1px solid var(--border);border-radius:var(--radius);padding:5px 12px;font-size:12px;cursor:pointer;color:var(--text2)}
+.today-btn:hover{background:var(--bg3)}
+
+.day-view,.week-view,.month-view{display:flex;flex-direction:column;gap:12px}
+.card{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px}
+.card-title{font-size:14px;font-weight:600;margin-bottom:12px}
+.pair-slot{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;display:flex;align-items:center;gap:10px;margin-bottom:6px}
+.pair-avatars{display:flex}
+.pair-avatars .avatar{width:24px;height:24px;font-size:10px;border:2px solid var(--bg2)}
+.pair-avatars .avatar:not(:first-child){margin-left:-6px}
+.pair-info{flex:1;min-width:0}
+.pair-names{font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pair-task{font-size:12px;color:var(--text2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.edit-btn{background:none;border:none;color:var(--text3);cursor:pointer;font-size:18px;padding:2px 6px;border-radius:4px;line-height:1;flex-shrink:0}
+.edit-btn:hover{background:var(--bg3);color:var(--text)}
+.add-pair-btn{width:100%;background:none;border:1px dashed var(--border);border-radius:var(--radius);padding:8px;font-size:13px;color:var(--text3);cursor:pointer;margin-top:4px}
+.add-pair-btn:hover{border-color:var(--purple);color:var(--purple)}
+.empty{font-size:13px;color:var(--text3);padding:4px 0}
+
+.week-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+@media(max-width:600px){.week-grid{grid-template-columns:repeat(7,1fr);gap:3px}}
+.week-day{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:8px 6px;min-height:80px;cursor:pointer;transition:border-color .15s}
+.week-day:hover{border-color:var(--purple)}
+.week-day.today{border-color:var(--blue);background:var(--blue-light)}
+.wd-label{font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:.04em}
+.wd-num{font-size:17px;font-weight:600;margin:2px 0 5px}
+.week-day.today .wd-num{color:var(--blue-text)}
+.week-chip{font-size:10px;border-radius:4px;padding:2px 4px;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.month-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+.month-hdr{font-size:11px;font-weight:600;color:var(--text2);text-align:center;padding:5px 0;text-transform:uppercase;letter-spacing:.05em}
+.month-day{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:5px;min-height:64px;cursor:pointer;transition:border-color .15s}
+.month-day:hover{border-color:var(--purple)}
+.month-day.today{border-color:var(--blue);background:var(--blue-light)}
+.month-day.other{opacity:.35}
+.mday-num{font-size:12px;font-weight:500;margin-bottom:3px}
+.month-day.today .mday-num{color:var(--blue-text)}
+.month-chip{font-size:9px;border-radius:3px;padding:2px 3px;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.modal-wrap{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:200;display:flex;align-items:flex-start;justify-content:center;padding:60px 16px 16px;overflow-y:auto}
+.modal{background:var(--bg);border-radius:var(--radius-lg);border:1px solid var(--border);padding:24px;width:100%;max-width:460px}
+.modal h3{font-size:16px;font-weight:600;margin-bottom:16px}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:5px}
+.field input,.field select,.field textarea{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius);font-size:14px;background:var(--bg);color:var(--text);outline:none;font-family:inherit}
+.field input:focus,.field select:focus,.field textarea:focus{border-color:var(--purple)}
+.field textarea{resize:vertical;min-height:70px}
+.modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:20px;flex-wrap:wrap}
+.btn{border-radius:var(--radius);padding:8px 16px;font-size:13px;cursor:pointer;font-family:inherit}
+.btn-cancel{background:none;border:1px solid var(--border);color:var(--text)}
+.btn-cancel:hover{background:var(--bg2)}
+.btn-save{background:var(--purple);color:#fff;border:none}
+.btn-save:hover{opacity:.9}
+.btn-del{background:var(--red-light);color:var(--red-text);border:1px solid var(--red)}
+
+.day-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-top:6px}
+.day-btn{border:1px solid var(--border);border-radius:4px;padding:5px 2px;font-size:11px;text-align:center;cursor:pointer;background:var(--bg2);color:var(--text2)}
+.day-btn.on{background:var(--teal-light);color:var(--teal-text);border-color:var(--teal)}
+.day-btn.off{background:var(--red-light);color:var(--red-text);border-color:var(--red)}
+
+.mpicker{display:flex;flex-direction:column;gap:5px;max-height:180px;overflow-y:auto}
+.mpick{display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radius);cursor:pointer}
+.mpick:hover{background:var(--bg2)}
+.mpick.picked{background:var(--purple-light);border-color:var(--purple)}
+.mpick.picked .member-name{color:var(--purple-text)}
+
+.tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+.tag{background:var(--blue-light);color:var(--blue-text);border-radius:4px;padding:3px 8px;font-size:12px;display:flex;align-items:center;gap:4px}
+.tag button{background:none;border:none;cursor:pointer;color:inherit;font-size:14px;padding:0;line-height:1}
+.rtag{background:var(--red-light);color:var(--red-text)}
+
+.setup{max-width:520px;margin:0 auto;padding:40px 20px}
+.setup h2{font-size:22px;font-weight:600;margin-bottom:8px}
+.setup .sub{font-size:14px;color:var(--text2);margin-bottom:28px;line-height:1.6}
+.setup-card{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-lg);padding:24px;margin-bottom:16px}
+.setup-card h3{font-size:14px;font-weight:600;margin-bottom:14px}
+.setup-card p{font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:12px}
+.setup-card ol{font-size:13px;color:var(--text2);line-height:1.8;padding-left:18px;margin-bottom:12px}
+.setup-card a{color:var(--purple)}
+.setup-card input{width:100%;padding:9px 11px;border:1px solid var(--border);border-radius:var(--radius);font-size:14px;background:var(--bg);color:var(--text);outline:none;margin-bottom:12px}
+.setup-card input:focus{border-color:var(--purple)}
+.setup-card .btn-save{width:100%;padding:10px}
+.hint{font-size:12px;color:var(--text3);margin-top:6px}
+
+.avail-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+
+<div class="setup" id="setup-screen">
+  <h2>Team planner</h2>
+  <p class="sub">This app stores your data in Google Drive as a JSON file. To connect it, you need a free Google Cloud OAuth client ID. Follow the steps below — it takes about 3 minutes.</p>
+
+  <div class="setup-card">
+    <h3>Step 1 — Create a Google Cloud OAuth client</h3>
+    <ol>
+      <li>Go to <a href="https://console.cloud.google.com/" target="_blank">console.cloud.google.com</a></li>
+      <li>Create a new project (or select an existing one)</li>
+      <li>Go to <strong>APIs &amp; Services → Enabled APIs</strong> and enable <strong>Google Drive API</strong></li>
+      <li>Go to <strong>APIs &amp; Services → Credentials → Create Credentials → OAuth client ID</strong></li>
+      <li>Choose <strong>Web application</strong></li>
+      <li>Under <strong>Authorised JavaScript origins</strong> add the URL where you'll host this file (e.g. <code>https://yourusername.github.io</code> — or <code>http://localhost</code> for local use)</li>
+      <li>Click <strong>Create</strong> and copy the <strong>Client ID</strong></li>
+    </ol>
+    <p>Also go to <strong>OAuth consent screen</strong>, add your own Google account as a test user, and set the app to External.</p>
+  </div>
+
+  <div class="setup-card">
+    <h3>Step 2 — Enter your Client ID</h3>
+    <input type="text" id="client-id-input" placeholder="123456789-abc...apps.googleusercontent.com"/>
+    <input type="text" id="file-name-input" placeholder="File name in Drive (default: team-planner.json)" value="team-planner.json"/>
+    <button class="btn btn-save" onclick="saveSetup()">Save and connect Google</button>
+    <p class="hint">Your Client ID is saved in your browser's local storage. Nothing is sent anywhere except Google's own OAuth servers.</p>
+  </div>
+</div>
+
+<div id="main-app" style="display:none">
+  <div class="topbar">
+    <h1>Team planner</h1>
+    <div class="nav">
+      <button class="nav-btn active" id="view-day" onclick="setView('day')">Day</button>
+      <button class="nav-btn" id="view-week" onclick="setView('week')">Week</button>
+      <button class="nav-btn" id="view-month" onclick="setView('month')">Month</button>
+    </div>
+    <button class="sync-btn" id="sync-btn" onclick="saveToDrive()">Save to Drive</button>
+    <span class="sync-status" id="sync-status"></span>
+  </div>
+
+  <div class="body-layout">
+    <div class="sidebar">
+      <h2>Team</h2>
+      <div class="member-list" id="member-list"></div>
+      <button class="add-btn" onclick="openAddMember()">+ Add member</button>
+      <div style="margin-top:22px">
+        <h2>Assignments</h2>
+        <button class="add-btn" onclick="openAddPair(null)">+ New pair assignment</button>
+      </div>
+    </div>
+    <div class="content">
+      <div class="view-header">
+        <button class="arr-btn" onclick="navigate(-1)">&#8249;</button>
+        <button class="arr-btn" onclick="navigate(1)">&#8250;</button>
+        <h2 id="view-title"></h2>
+        <button class="today-btn" onclick="goToday()">Today</button>
+      </div>
+      <div id="view-content"></div>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<div id="modal-wrap" class="modal-wrap" style="display:none" onclick="maybeClose(event)">
+  <div class="modal" id="modal"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/google-one-tap/dist/google-one-tap.umd.min.js"></script>
+<script>
+const COLORS = ['#534AB7','#0F6E56','#993C1D','#854F0B','#185FA5','#3B6D11','#993556','#5F5E5A','#A32D2D','#3C3489'];
+const LCOLORS = ['#EEEDFE','#E1F5EE','#FAECE7','#FAEEDA','#E6F1FB','#EAF3DE','#FBEAF0','#F1EFE8','#FCEBEB','#CECBF6'];
+const TCOLORS = ['#3C3489','#085041','#712B13','#633806','#0C447C','#27500A','#72243E','#444441','#791F1F','#26215C'];
+const DAYS7 = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const WDAYS = ['mon','tue','wed','thu','fri','sat','sun'];
+
+let S = {
+  members: [],
+  assignments: [],
+  view: 'day',
+  date: new Date(),
+  clientId: '',
+  fileName: 'team-planner.json',
+  fileId: null,
+  token: null
+};
+
+function pad(n){return String(n).padStart(2,'0')}
+function dk(d){return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`}
+function pd(s){const[y,m,d]=s.split('-');return new Date(+y,+m-1,+d)}
+function todayKey(){return dk(new Date())}
+function initials(n){return n.split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase()}
+function mIdx(id){return S.members.findIndex(m=>m.id===id)}
+function getMember(id){return S.members.find(m=>m.id===id)}
+function bg(i){return LCOLORS[i%LCOLORS.length]}
+function fg(i){return TCOLORS[i%TCOLORS.length]}
+function brd(i){return COLORS[i%COLORS.length]}
+function avHTML(m,sz=28){const i=mIdx(m.id),fs=sz<26?9:sz<32?11:13;return `<div class="avatar" style="width:${sz}px;height:${sz}px;background:${bg(i)};color:${fg(i)};font-size:${fs}px">${initials(m.name)}</div>`}
+
+function setStatus(t){document.getElementById('sync-status').textContent=t}
+
+function saveSetup(){
+  const cid=document.getElementById('client-id-input').value.trim();
+  const fn=document.getElementById('file-name-input').value.trim()||'team-planner.json';
+  if(!cid){alert('Please enter your Client ID');return}
+  localStorage.setItem('tp_clientid',cid);
+  localStorage.setItem('tp_filename',fn);
+  S.clientId=cid; S.fileName=fn;
+  startGoogleAuth();
+}
+
+function startGoogleAuth(){
+  document.getElementById('setup-screen').style.display='none';
+  document.getElementById('main-app').style.display='flex';
+  document.getElementById('main-app').style.flexDirection='column';
+  loadGISAndAuth();
+}
+
+function loadGISAndAuth(){
+  const s=document.createElement('script');
+  s.src='https://accounts.google.com/gsi/client';
+  s.onload=initAuth;
+  document.head.appendChild(s);
+}
+
+function initAuth(){
+  const client=google.accounts.oauth2.initTokenClient({
+    client_id: S.clientId,
+    scope:'https://www.googleapis.com/auth/drive.file',
+    callback:(resp)=>{
+      if(resp.error){setStatus('Auth failed: '+resp.error);return}
+      S.token=resp.access_token;
+      setStatus('Connected to Google Drive');
+      loadFromDrive();
+    }
+  });
+  S.authClient=client;
+  client.requestAccessToken();
+}
+
+async function driveRequest(method,url,body,isJson=true){
+  const headers={'Authorization':'Bearer '+S.token};
+  if(isJson&&body) headers['Content-Type']='application/json';
+  const resp=await fetch(url,{method,headers,body:isJson&&body?JSON.stringify(body):body});
+  if(resp.status===401){setStatus('Session expired — refreshing...');S.authClient.requestAccessToken();throw new Error('401')}
+  return resp;
+}
+
+async function findFile(){
+  const q=encodeURIComponent(`name='${S.fileName}' and trashed=false`);
+  const r=await driveRequest('GET',`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`);
+  const data=await r.json();
+  return data.files&&data.files.length>0?data.files[0].id:null;
+}
+
+async function loadFromDrive(){
+  setStatus('Loading from Drive...');
+  try{
+    const id=await findFile();
+    if(!id){S.fileId=null;setStatus('New file — add team members to get started');render();return}
+    S.fileId=id;
+    const r=await driveRequest('GET',`https://www.googleapis.com/drive/v3/files/${id}?alt=media`);
+    const data=await r.json();
+    S.members=data.members||[];
+    S.assignments=data.assignments||[];
+    setStatus('Loaded from Drive');
+  }catch(e){
+    if(e.message!=='401'){setStatus('Load failed — working locally');console.error(e)}
+  }
+  render();
+}
+
+async function saveToDrive(){
+  if(!S.token){setStatus('Not connected to Google');return}
+  const btn=document.getElementById('sync-btn');
+  btn.disabled=true; setStatus('Saving...');
+  try{
+    const payload=JSON.stringify({members:S.members,assignments:S.assignments,version:1,updated:new Date().toISOString()});
+    if(S.fileId){
+      await driveRequest('PATCH',`https://www.googleapis.com/upload/drive/v3/files/${S.fileId}?uploadType=media`,payload,false);
+    }else{
+      const meta=await driveRequest('POST','https://www.googleapis.com/drive/v3/files',{name:S.fileName,mimeType:'application/json'});
+      const created=await meta.json();
+      S.fileId=created.id;
+      await driveRequest('PATCH',`https://www.googleapis.com/upload/drive/v3/files/${S.fileId}?uploadType=media`,payload,false);
+    }
+    setStatus('Saved  '+new Date().toLocaleTimeString());
+  }catch(e){
+    if(e.message!=='401') setStatus('Save failed');
+    console.error(e);
+  }
+  btn.disabled=false;
+}
+
+function setView(v){
+  S.view=v;
+  ['day','week','month'].forEach(x=>document.getElementById('view-'+x).classList.toggle('active',x===v));
+  render();
+}
+function navigate(d){
+  const dt=new Date(S.date);
+  if(S.view==='day') dt.setDate(dt.getDate()+d);
+  else if(S.view==='week') dt.setDate(dt.getDate()+d*7);
+  else dt.setMonth(dt.getMonth()+d);
+  S.date=dt; render();
+}
+function goToday(){S.date=new Date();render()}
+function goDay(d){S.date=pd(d);setView('day')}
+
+function getAssigns(d){return S.assignments.filter(a=>a.dates&&a.dates.includes(d))}
+
+function isMemberAvailable(m,d){
+  if(!m.availability) return true;
+  if(m.availability.unavailableDates&&m.availability.unavailableDates.includes(d)) return false;
+  if(m.availability.workDays){
+    const dt=pd(d),dow=dt.getDay();
+    const map={0:'sun',1:'mon',2:'tue',3:'wed',4:'thu',5:'fri',6:'sat'};
+    if(!m.availability.workDays.includes(map[dow])) return false;
+  }
+  return true;
+}
+
+function renderMemberList(){
+  document.getElementById('member-list').innerHTML=S.members.map(m=>{
+    const sel=S.selectedMember===m.id;
+    return `<div class="member-item${sel?' selected':''}" onclick="clickMember('${m.id}')">
+      ${avHTML(m,26)}<span class="member-name">${m.name}</span>
+    </div>`;
+  }).join('');
+}
+
+function clickMember(id){
+  S.selectedMember=id;
+  renderMemberList();
+  openEditMember(id);
+}
+
+function render(){
+  renderMemberList();
+  if(S.view==='day') renderDay();
+  else if(S.view==='week') renderWeek();
+  else renderMonth();
+}
+
+function renderDay(){
+  const d=S.date,dkk=dk(d);
+  document.getElementById('view-title').textContent=d.toLocaleDateString('en',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  const assigns=getAssigns(dkk);
+  let h=`<div class="day-view"><div class="card"><div class="card-title">Assignments</div>`;
+  if(!assigns.length) h+=`<div class="empty">No assignments for this day.</div>`;
+  assigns.forEach(a=>{
+    const m1=getMember(a.member1),m2=getMember(a.member2);
+    if(!m1||!m2) return;
+    h+=`<div class="pair-slot">
+      <div class="pair-avatars">${avHTML(m1,24)}${avHTML(m2,24)}</div>
+      <div class="pair-info"><div class="pair-names">${m1.name} &amp; ${m2.name}</div>
+      <div class="pair-task">${a.task||'No task set'}</div></div>
+      <button class="edit-btn" onclick="openEditAssign('${a.id}')">&#8942;</button>
+    </div>`;
+  });
+  h+=`<button class="add-pair-btn" onclick="openAddPair('${dkk}')">+ Add pair assignment</button></div>`;
+
+  const avail=S.members.filter(m=>isMemberAvailable(m,dkk));
+  const unavail=S.members.filter(m=>!isMemberAvailable(m,dkk));
+  h+=`<div class="card"><div class="card-title">Availability</div>
+    <div style="display:flex;gap:20px;flex-wrap:wrap">
+      <div><div style="font-size:12px;font-weight:500;color:var(--teal-text);margin-bottom:6px">Available (${avail.length})</div>
+      ${avail.map(m=>`<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">${avHTML(m,20)}<span style="font-size:13px">${m.name}</span></div>`).join('')||'<span style="font-size:12px;color:var(--text3)">None</span>'}
+      </div>
+      <div><div style="font-size:12px;font-weight:500;color:var(--red-text);margin-bottom:6px">Unavailable (${unavail.length})</div>
+      ${unavail.map(m=>`<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">${avHTML(m,20)}<span style="font-size:13px">${m.name}</span></div>`).join('')||'<span style="font-size:12px;color:var(--text3)">None</span>'}
+      </div>
+    </div></div></div>`;
+  document.getElementById('view-content').innerHTML=h;
+}
+
+function renderWeek(){
+  const d=new Date(S.date),dow=d.getDay(),diff=dow===0?-6:1-dow;
+  d.setDate(d.getDate()+diff);
+  const days=Array.from({length:7},(_,i)=>{const dd=new Date(d);dd.setDate(d.getDate()+i);return dd});
+  document.getElementById('view-title').textContent=
+    days[0].toLocaleDateString('en',{day:'numeric',month:'short'})+' – '+
+    days[6].toLocaleDateString('en',{day:'numeric',month:'short',year:'numeric'});
+  const tod=todayKey();
+  let h=`<div class="week-view"><div class="week-grid">`;
+  days.forEach(dd=>{
+    const dkk=dk(dd),isT=dkk===tod,as=getAssigns(dkk);
+    h+=`<div class="week-day${isT?' today':''}" onclick="goDay('${dkk}')">
+      <div class="wd-label">${dd.toLocaleDateString('en',{weekday:'short'})}</div>
+      <div class="wd-num">${dd.getDate()}</div>
+      ${as.map(a=>{const m1=getMember(a.member1),m2=getMember(a.member2);if(!m1||!m2)return'';const i=mIdx(a.member1);
+        return`<div class="week-chip" style="background:${bg(i)};color:${fg(i)}">${initials(m1.name)}+${initials(m2.name)}</div>`;}).join('')}
+    </div>`;
+  });
+  h+=`</div></div>`;
+  document.getElementById('view-content').innerHTML=h;
+}
+
+function renderMonth(){
+  const yr=S.date.getFullYear(),mo=S.date.getMonth();
+  document.getElementById('view-title').textContent=`${MONTHS[mo]} ${yr}`;
+  const first=new Date(yr,mo,1),last=new Date(yr,mo+1,0);
+  const startOff=first.getDay()===0?6:first.getDay()-1;
+  const tod=todayKey();
+  let h=`<div class="month-view"><div class="month-grid">`;
+  DAYS7.forEach(d=>{h+=`<div class="month-hdr">${d}</div>`});
+  for(let i=0;i<startOff;i++){const dd=new Date(yr,mo,1-startOff+i);h+=renderMDay(dd,true,tod)}
+  for(let d=1;d<=last.getDate();d++){const dd=new Date(yr,mo,d);h+=renderMDay(dd,false,tod)}
+  const rem=7-((startOff+last.getDate())%7);
+  if(rem<7) for(let i=1;i<=rem;i++){const dd=new Date(yr,mo+1,i);h+=renderMDay(dd,true,tod)}
+  h+=`</div></div>`;
+  document.getElementById('view-content').innerHTML=h;
+}
+
+function renderMDay(dd,other,tod){
+  const dkk=dk(dd),isT=dkk===tod,as=getAssigns(dkk);
+  return`<div class="month-day${isT?' today':''}${other?' other':''}" onclick="goDay('${dkk}')">
+    <div class="mday-num">${dd.getDate()}</div>
+    ${as.slice(0,2).map(a=>{const m1=getMember(a.member1),m2=getMember(a.member2);if(!m1||!m2)return'';const i=mIdx(a.member1);
+      return`<div class="month-chip" style="background:${bg(i)};color:${fg(i)}">${initials(m1.name)}+${initials(m2.name)}</div>`;}).join('')}
+    ${as.length>2?`<div class="month-chip" style="background:var(--bg3);color:var(--text3)">+${as.length-2}</div>`:''}
+  </div>`;
+}
+
+function openModal(h){document.getElementById('modal').innerHTML=h;document.getElementById('modal-wrap').style.display='flex'}
+function closeModal(){document.getElementById('modal-wrap').style.display='none';S.selectedMember=null;renderMemberList()}
+function maybeClose(e){if(e.target===document.getElementById('modal-wrap')) closeModal()}
+
+function openAddMember(){
+  openModal(`<h3>Add team member</h3>
+    <div class="field"><label>Full name</label><input id="m-name" autofocus placeholder="e.g. Anna Berg"/></div>
+    <div class="field"><label>Role (optional)</label><input id="m-role" placeholder="e.g. Engineer"/></div>
+    <div class="field"><label>Default work days</label>
+      <div class="day-grid">${DAYS7.map((d,i)=>`<button class="day-btn on" data-day="${WDAYS[i]}" onclick="this.classList.toggle('on');this.classList.toggle('off')">${d}</button>`).join('')}</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-cancel" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-save" onclick="saveMember()">Add</button>
+    </div>`);
+}
+
+function saveMember(){
+  const name=document.getElementById('m-name').value.trim();
+  if(!name){alert('Name required');return}
+  const workDays=[...document.querySelectorAll('.day-grid .day-btn.on')].map(b=>b.dataset.day);
+  S.members.push({id:'m_'+Date.now(),name,role:document.getElementById('m-role').value.trim(),
+    availability:{workDays,unavailableDates:[]}});
+  closeModal();render();setStatus('Unsaved changes');
+}
+
+function openEditMember(id){
+  const m=getMember(id);if(!m)return;
+  const wd=m.availability?.workDays||['mon','tue','wed','thu','fri'];
+  openModal(`<h3>Edit: ${m.name}</h3>
+    <div class="field"><label>Name</label><input id="em-name" value="${m.name}"/></div>
+    <div class="field"><label>Role</label><input id="em-role" value="${m.role||''}"/></div>
+    <div class="field"><label>Work days</label>
+      <div class="day-grid">${DAYS7.map((d,i)=>{const on=wd.includes(WDAYS[i]);
+        return`<button class="day-btn ${on?'on':'off'}" data-day="${WDAYS[i]}" onclick="this.classList.toggle('on');this.classList.toggle('off')">${d}</button>`}).join('')}
+      </div>
+    </div>
+    <div class="field"><label>Add unavailable date</label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="date" id="em-ud" style="flex:1"/>
+        <button class="btn btn-cancel" onclick="addUD('${id}')">Add</button>
+      </div>
+      <div class="tags" id="ud-tags">
+        ${(m.availability?.unavailableDates||[]).map(d=>`<span class="tag rtag">${d}<button onclick="removeUD('${id}','${d}')">×</button></span>`).join('')}
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-del" onclick="deleteMember('${id}')">Delete</button>
+      <button class="btn btn-cancel" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-save" onclick="updateMember('${id}')">Save</button>
+    </div>`);
+}
+
+function addUD(id){
+  const v=document.getElementById('em-ud').value;if(!v)return;
+  const m=getMember(id);
+  if(!m.availability) m.availability={workDays:['mon','tue','wed','thu','fri'],unavailableDates:[]};
+  if(!m.availability.unavailableDates.includes(v)){m.availability.unavailableDates.push(v);setStatus('Unsaved changes')}
+  openEditMember(id);
+}
+function removeUD(id,d){
+  const m=getMember(id);
+  if(m?.availability?.unavailableDates) m.availability.unavailableDates=m.availability.unavailableDates.filter(x=>x!==d);
+  setStatus('Unsaved changes');openEditMember(id);
+}
+function updateMember(id){
+  const m=getMember(id);
+  m.name=document.getElementById('em-name').value.trim()||m.name;
+  m.role=document.getElementById('em-role').value.trim();
+  if(!m.availability) m.availability={unavailableDates:[]};
+  m.availability.workDays=[...document.querySelectorAll('.day-grid .day-btn.on')].map(b=>b.dataset.day);
+  closeModal();render();setStatus('Unsaved changes');
+}
+function deleteMember(id){
+  if(!confirm('Delete member and their assignments?'))return;
+  S.members=S.members.filter(m=>m.id!==id);
+  S.assignments=S.assignments.filter(a=>a.member1!==id&&a.member2!==id);
+  closeModal();render();setStatus('Unsaved changes');
+}
+
+function openAddPair(defaultDate){
+  const dkk=defaultDate||dk(S.date);
+  openModal(`<h3>New pair assignment</h3>
+    <div class="field"><label>Select 2 team members</label>
+      <div class="mpicker" id="mpicker">
+        ${S.members.map(m=>`<div class="mpick" data-id="${m.id}" onclick="togglePick(this)">
+          ${avHTML(m,22)}<span class="member-name">${m.name}${m.role?` <span style="color:var(--text3);font-size:11px">— ${m.role}</span>`:''}</span>
+        </div>`).join('')}
+      </div>
+    </div>
+    <div class="field"><label>Task description</label>
+      <textarea id="pa-task" placeholder="What will this pair work on?"></textarea>
+    </div>
+    <div class="field"><label>Dates</label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="date" id="pa-date" value="${dkk}" style="flex:1"/>
+        <button class="btn btn-cancel" onclick="addPaDate()">+ Add</button>
+      </div>
+      <div class="tags" id="pa-dates">
+        <span class="tag" data-date="${dkk}">${dkk}<button onclick="this.parentElement.remove()">×</button></span>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-cancel" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-save" onclick="saveAssign()">Save</button>
+    </div>`);
+}
+
+function togglePick(el){
+  const picked=document.querySelectorAll('#mpicker .mpick.picked');
+  if(!el.classList.contains('picked')&&picked.length>=2){alert('Select exactly 2 members');return}
+  el.classList.toggle('picked');
+}
+function addPaDate(){
+  const v=document.getElementById('pa-date').value;if(!v)return;
+  if(document.querySelector(`#pa-dates [data-date="${v}"]`))return;
+  const t=document.createElement('span');
+  t.className='tag';t.dataset.date=v;
+  t.innerHTML=`${v}<button onclick="this.parentElement.remove()">×</button>`;
+  document.getElementById('pa-dates').appendChild(t);
+}
+function saveAssign(){
+  const picked=[...document.querySelectorAll('#mpicker .mpick.picked')];
+  if(picked.length!==2){alert('Select exactly 2 members');return}
+  const dates=[...document.querySelectorAll('#pa-dates .tag')].map(t=>t.dataset.date);
+  if(!dates.length){alert('Add at least one date');return}
+  S.assignments.push({id:'a_'+Date.now(),member1:picked[0].dataset.id,member2:picked[1].dataset.id,
+    task:document.getElementById('pa-task').value.trim(),dates});
+  closeModal();render();setStatus('Unsaved changes');
+}
+
+function openEditAssign(id){
+  const a=S.assignments.find(x=>x.id===id);if(!a)return;
+  const m1=getMember(a.member1),m2=getMember(a.member2);
+  openModal(`<h3>Edit assignment</h3>
+    <div class="field"><label>Pair</label>
+      <div style="display:flex;align-items:center;gap:8px;background:var(--bg2);padding:8px 12px;border-radius:var(--radius);border:1px solid var(--border)">
+        ${m1?avHTML(m1,26):''}${m2?avHTML(m2,26):''}
+        <span style="font-size:14px;font-weight:500">${m1?.name||'?'} &amp; ${m2?.name||'?'}</span>
+      </div>
+    </div>
+    <div class="field"><label>Task description</label>
+      <textarea id="ea-task">${a.task||''}</textarea>
+    </div>
+    <div class="field"><label>Dates</label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="date" id="ea-date" style="flex:1"/>
+        <button class="btn btn-cancel" onclick="addEaDate()">+ Add</button>
+      </div>
+      <div class="tags" id="ea-dates">
+        ${(a.dates||[]).map(d=>`<span class="tag" data-date="${d}">${d}<button onclick="this.parentElement.remove()">×</button></span>`).join('')}
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-del" onclick="deleteAssign('${id}')">Delete</button>
+      <button class="btn btn-cancel" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-save" onclick="updateAssign('${id}')">Save</button>
+    </div>`);
+}
+function addEaDate(){
+  const v=document.getElementById('ea-date').value;if(!v)return;
+  if(document.querySelector(`#ea-dates [data-date="${v}"]`))return;
+  const t=document.createElement('span');t.className='tag';t.dataset.date=v;
+  t.innerHTML=`${v}<button onclick="this.parentElement.remove()">×</button>`;
+  document.getElementById('ea-dates').appendChild(t);
+}
+function updateAssign(id){
+  const a=S.assignments.find(x=>x.id===id);if(!a)return;
+  a.task=document.getElementById('ea-task').value.trim();
+  a.dates=[...document.querySelectorAll('#ea-dates .tag')].map(t=>t.dataset.date);
+  closeModal();render();setStatus('Unsaved changes');
+}
+function deleteAssign(id){
+  if(!confirm('Delete assignment?'))return;
+  S.assignments=S.assignments.filter(a=>a.id!==id);
+  closeModal();render();setStatus('Unsaved changes');
+}
+
+document.addEventListener('DOMContentLoaded',()=>{
+  const cid=localStorage.getItem('tp_clientid');
+  const fn=localStorage.getItem('tp_filename');
+  if(cid){
+    S.clientId=cid;S.fileName=fn||'team-planner.json';
+    document.getElementById('setup-screen').style.display='none';
+    document.getElementById('main-app').style.display='flex';
+    document.getElementById('main-app').style.flexDirection='column';
+    loadGISAndAuth();
+  }else{
+    document.getElementById('setup-screen').style.display='block';
+  }
+  render();
+});
+</script>
+</body>
+</html>
